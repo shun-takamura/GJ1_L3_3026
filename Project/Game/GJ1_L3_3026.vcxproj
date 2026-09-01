@@ -1,0 +1,192 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Development|x64">
+      <Configuration>Development</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{b3d5f207-9c14-4a6e-8f31-27ad4e60c1b8}</ProjectGuid>
+    <RootNamespace>GJ1_L3_3026</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <!-- LTCG は無効。詳細は Documents/12_Pitfalls.md -->
+    <WholeProgramOptimization>false</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Development|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>false</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <!-- エンジンのコンパイル設定（インクルードパス・言語規格・ランタイムライブラリ） -->
+  <Import Project="$(SolutionDir)Common.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="Shared" />
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Development|x64'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <!--
+    エンジンは Resources/ を「ソリューションのある Project/ からの相対パス」で読む。
+    デバッグ実行時のカレントディレクトリをそこに合わせる。
+  -->
+  <PropertyGroup>
+    <LocalDebuggerWorkingDirectory>$(SolutionDir)</LocalDebuggerWorkingDirectory>
+    <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
+  </PropertyGroup>
+  <!-- 自分のヘッダを引けるようにする（エンジン側は Common.props が面倒を見る） -->
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(SolutionDir)Game;$(SolutionDir)Game\Scene;$(SolutionDir)Game\Scene\Transition;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <PropertyGroup>
+    <IntDir>$(SolutionDir)..\Generated\Obj\$(ProjectName)\$(Configuration)\</IntDir>
+    <OutDir>$(SolutionDir)..\Generated\Output\$(Configuration)\</OutDir>
+  </PropertyGroup>
+  <!--
+    エンジンは配布された静的ライブラリをリンクする（プロジェクト参照ではない）。
+    lib/<構成>/ArcanaEngine.lib と DirectXTex.lib が同梱されている。
+  -->
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <LinkTimeCodeGeneration />
+      <AdditionalLibraryDirectories>$(SolutionDir)lib\Debug;$(SolutionDir)externals\assimp\lib\Debug;$(SolutionDir)externals\DirectStorage\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>ArcanaEngine.lib;DirectXTex.lib;dstorage.lib;assimp-vc143-mtd.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalOptions>/ignore:4099 %(AdditionalOptions)</AdditionalOptions>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(SolutionDir)lib\Release;$(SolutionDir)externals\assimp\lib\Release;$(SolutionDir)externals\DirectStorage\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>ArcanaEngine.lib;DirectXTex.lib;dstorage.lib;assimp-vc143-mt.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalOptions>/ignore:4099 %(AdditionalOptions)</AdditionalOptions>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Development|x64'">
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <LinkTimeCodeGeneration />
+      <AdditionalLibraryDirectories>$(SolutionDir)lib\Development;$(SolutionDir)externals\assimp\lib\Release;$(SolutionDir)externals\DirectStorage\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>ArcanaEngine.lib;DirectXTex.lib;dstorage.lib;assimp-vc143-mt.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalOptions>/ignore:4099 %(AdditionalOptions)</AdditionalOptions>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="GameApp.cpp" />
+    <ClCompile Include="Scene\SceneManager.cpp" />
+    <ClCompile Include="Scene\SceneFactory.cpp" />
+    <ClCompile Include="Scene\TitleScene.cpp" />
+    <ClCompile Include="Scene\GameScene.cpp" />
+    <ClCompile Include="Scene\Transition\BaseTransition.cpp" />
+    <ClCompile Include="Scene\Transition\FadeTransition.cpp" />
+    <ClCompile Include="Scene\Transition\TransitionManager.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="GameApp.h" />
+    <ClInclude Include="Scene\SceneManager.h" />
+    <ClInclude Include="Scene\SceneFactory.h" />
+    <ClInclude Include="Scene\TitleScene.h" />
+    <ClInclude Include="Scene\GameScene.h" />
+    <ClInclude Include="Scene\Transition\BaseTransition.h" />
+    <ClInclude Include="Scene\Transition\FadeTransition.h" />
+    <ClInclude Include="Scene\Transition\TransitionManager.h" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <!--
+    実行に必要な DLL を出力フォルダへ置く。
+
+    バッチの copy ではなく MSBuild の Copy タスクを使うのは、展開先のパスに
+    日本語が含まれていても確実に動かすため（PostBuildEvent は一時バッチ経由なので
+    コードページの影響を受ける）。
+
+    dxcompiler.dll / dxil.dll は Windows SDK に入っているが、
+    SDK のバージョンによっては dxil.dll が同梱されていないことがある。
+    そのため $(TargetPlatformVersion) だけを見ず、見つかったものを使う。
+  -->
+  <Target Name="CopyRuntimeDlls" AfterTargets="Build">
+    <ItemGroup>
+      <!-- SDK のどのバージョンに入っていても拾えるようワイルドカードで探す -->
+      <SdkDxc Include="$(WindowsSdkDir)bin\*\x64\dxcompiler.dll" />
+      <SdkDxil Include="$(WindowsSdkDir)bin\*\x64\dxil.dll" />
+      <RuntimeDll Include="$(SolutionDir)externals\DirectStorage\bin\x64\dstorage.dll" />
+      <RuntimeDll Include="$(SolutionDir)externals\DirectStorage\bin\x64\dstoragecore.dll" />
+    </ItemGroup>
+
+    <!-- 複数バージョンが見つかった場合は最後（＝最も新しい）のものを使う -->
+    <PropertyGroup>
+      <_DxcPath>%(SdkDxc.FullPath)</_DxcPath>
+      <_DxilPath>%(SdkDxil.FullPath)</_DxilPath>
+    </PropertyGroup>
+
+    <Copy SourceFiles="@(RuntimeDll)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(_DxcPath)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true"
+          Condition="'$(_DxcPath)' != '' And Exists('$(_DxcPath)')" />
+    <Copy SourceFiles="$(_DxilPath)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true"
+          Condition="'$(_DxilPath)' != '' And Exists('$(_DxilPath)')" />
+
+    <Warning Text="dxcompiler.dll が Windows SDK に見つかりませんでした。シェーダの実行時コンパイルができません。"
+             Condition="'$(_DxcPath)' == ''" />
+    <Warning Text="dxil.dll が Windows SDK に見つかりませんでした。別バージョンの SDK を入れるか、手動で配置してください。"
+             Condition="'$(_DxilPath)' == ''" />
+  </Target>
+  <ImportGroup Label="ExtensionTargets" />
+  <!--
+    アセットコンバータ。Assets/ に置いた元データを Resources/ へ変換する。
+    gdeflate_compress.exe は配布物の bin/ に同梱されている。
+  -->
+  <PropertyGroup>
+    <BuildDependsOn>CookAssets;$(BuildDependsOn)</BuildDependsOn>
+  </PropertyGroup>
+  <Target Name="CookAssets">
+    <Message Importance="high" Text="Cooking assets..." />
+    <!-- 日本語を含むパスでもバッチが文字化けしないようコードページを UTF-8 に固定する -->
+    <Copy SourceFiles="$(SolutionDir)externals\DirectStorage\bin\x64\dstorage.dll;$(SolutionDir)externals\DirectStorage\bin\x64\dstoragecore.dll"
+          DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+    <Exec Command="chcp 65001 &gt;nul &amp;&amp; py tools\Python\convert_hdr_to_dds.py --silent" WorkingDirectory="$(SolutionDir)" />
+    <Exec Command="chcp 65001 &gt;nul &amp;&amp; py tools\Python\cook_assets.py" WorkingDirectory="$(SolutionDir)" />
+    <Exec Command="chcp 65001 &gt;nul &amp;&amp; py tools\Python\pack_assets.py --gdeflate-exe bin\gdeflate_compress.exe" WorkingDirectory="$(SolutionDir)" />
+  </Target>
+</Project>

@@ -1,0 +1,1403 @@
+"""Assets/ ツリーを走査して Resources/ にミラー変換するアセットコンバータ。
+
+使い方:
+    cd Project/
+    python tools/Python/cook_assets.py            # 差分のみ変換
+    python tools/Python/cook_assets.py --force    # 全再変換
+    python tools/Python/cook_assets.py --dry-run  # 何も書き換えず予定だけ出力
+
+ファイル拡張子別の処理:
+    .png         → Resources/同パス/*.dds (BC7, texconv)         [Step 1 で実装]
+    .obj + .mtl  → Resources/同パス/*.mesh (バイナリ, pyassimp)  [Step 3 で実装]
+    .gltf + .bin → Resources/同パス/*.glb (バイナリ統合)         [Step 5 で実装]
+    .wav         → Resources/同パス/*.wav (コピー)               [Step 1 で実装]
+    .mtl .bin    → スキップ（.obj/.gltf 変換に吸収）
+    .hdr         → スキップ（convert_hdr_to_dds.py が処理）
+
+Step 0 では走査・差分判定・統計表示のみ。変換ロジックは未実装。
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import struct
+import subprocess
+import sys
+import urllib.parse
+from dataclasses import dataclass
+from enum import Enum, auto
+from pathlib import Path
+
+# ============================================================
+# 設定
+# ============================================================
+ASSETS_DIR = Path("Assets")
+RESOURCES_DIR = Path("Resources")
+CACHE_FILE = Path("tools/Python/sync_cache.json")
+TEXCONV = Path("externals/texconv/Texconv.exe")
+
+# パスにこの部分文字列が含まれる PNG は線形値として圧縮する（マスク・ノーマル等）。
+# 法線マップは sRGB だと法線がずれるので、ファイル名/フォルダ名に "NormalMap" を含めること。
+LINEAR_TEXTURE_HINTS = ("MaskTexture", "NormalMap")
+
+# ---- .mesh v3 フォーマット定数 ----
+# Header: magic(4) + version(4) + flags(4) + vc(4) + ic(4) + smc(4)
+#       + vo(4) + io(4) + so(4) + smo(4) + skeleton_path(256)
+# v3 で頂点に tangent(Vector4) を追加（法線マップ用。w=handedness）
+MESH_MAGIC = b"MESH"
+MESH_VERSION = 3
+MESH_HEADER_SIZE = 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 256  # = 288
+MESH_VERTEX_SIZE = 16 + 8 + 12 + 16                              # = 52 (pos + uv + normal + tangent)
+MESH_SKIN_VERTEX_SIZE = 16 + 16                                  # = 32 (joint_indices + weights)
+MESH_SUBMESH_SIZE = 4 + 4 + 256                                  # = 264
+MESH_PATH_LEN = 256
+MESH_FLAG_HAS_SKINNING = 0x1
+
+# ---- .mat フォーマット定数 ----
+# v3 Header: magic(4) + version(4) + base_color_path(256) + color(16) + enable_lighting(4)
+#          + shininess(4) + env_coeff(4) + use_env_map(4)
+#          + metallic(4) + roughness(4) + shading_model(4)
+#          + normal_map_path(256)
+MAT_MAGIC = b"MATL"
+MAT_VERSION = 3
+MAT_HEADER_SIZE = 4 + 4 + 256 + 16 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 256  # = 564
+
+# ---- マテリアルデフォルト値（ModelInstance::CreateMaterialData と合わせる）----
+MAT_DEFAULT_COLOR = (1.0, 1.0, 1.0, 1.0)
+MAT_DEFAULT_ENABLE_LIGHTING = 1
+MAT_DEFAULT_SHININESS = 50.0
+MAT_DEFAULT_ENV_COEFF = 1.0
+MAT_DEFAULT_USE_ENV_MAP = 0
+MAT_DEFAULT_METALLIC = 0.0
+MAT_DEFAULT_ROUGHNESS = 0.5
+MAT_DEFAULT_SHADING_MODEL = 0  # 0=BlinnPhong, 1=PBR（既存の見た目を変えないよう既定は BlinnPhong）
+MAT_DEFAULT_NORMAL_MAP = ""    # 法線マップ DDS パス（空＝法線マップなし）
+
+
+class Action(Enum):
+    """ファイルに対する処理種別"""
+    CONVERT_PNG_TO_DDS = auto()
+    CONVERT_OBJ_TO_MESH = auto()
+    CONVERT_GLTF_TO_MESH = auto()  # 旧 GLTF_TO_GLB。.mesh + .skel + .mat + .anim を出力
+    COPY = auto()
+    SKIP = auto()
+    UNKNOWN = auto()
+
+
+@dataclass
+class FileTask:
+    """1ファイルあたりの処理タスク"""
+    src: Path
+    action: Action
+    dst: Path | None
+
+
+# ============================================================
+# 分類
+# ============================================================
+def classify(src: Path) -> FileTask:
+    """拡張子から処理種別を決定し、出力パスを組み立てる"""
+    suffix = src.suffix.lower()
+    rel = src.relative_to(ASSETS_DIR)
+
+    if suffix == ".png":
+        return FileTask(src, Action.CONVERT_PNG_TO_DDS, RESOURCES_DIR / rel.with_suffix(".dds"))
+    if suffix == ".obj":
+        return FileTask(src, Action.CONVERT_OBJ_TO_MESH, RESOURCES_DIR / rel.with_suffix(".mesh"))
+    if suffix == ".gltf":
+        # 出力代表は .mesh。実際には .mesh + .skel + .mat + .anim をまとめて吐く。
+        return FileTask(src, Action.CONVERT_GLTF_TO_MESH, RESOURCES_DIR / rel.with_suffix(".mesh"))
+    if suffix in (".wav", ".ttf"):
+        return FileTask(src, Action.COPY, RESOURCES_DIR / rel)
+    if suffix in {".mtl", ".bin", ".hdr", ".fbx"}:
+        # .mtl / .bin: .obj / .gltf 変換で吸収
+        # .hdr: convert_hdr_to_dds.py が処理
+        # .fbx: .gltf があれば冗長なので無視（DCC オーサリング用に Assets/ に残しておく前提）
+        return FileTask(src, Action.SKIP, None)
+    return FileTask(src, Action.UNKNOWN, None)
+
+
+# ============================================================
+# 差分キャッシュ
+# ============================================================
+def load_cache() -> dict[str, float]:
+    if not CACHE_FILE.exists():
+        return {}
+    try:
+        return json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_cache(cache: dict[str, float]) -> None:
+    CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    CACHE_FILE.write_text(
+        json.dumps(cache, indent=2, sort_keys=True, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def needs_rebuild(task: FileTask, cache: dict[str, float], force: bool) -> bool:
+    if force:
+        return True
+    if task.dst is None or not task.dst.exists():
+        return True
+    cached_mtime = cache.get(task.src.as_posix())
+    return cached_mtime != task.src.stat().st_mtime
+
+
+# ============================================================
+# Tangent 計算（法線マップ用 TBN）
+# ============================================================
+def _compute_tangents(vertex_buffer, index_buffer):
+    """9要素タプル (px,py,pz,pw, u,v, nx,ny,nz) のリストに tangent(Vec4) を計算し、
+    13要素 (..., tx,ty,tz,tw) のリストにして返す。tw は handedness(±1)。
+    三角形ごとに UV と位置から tangent/bitangent を求め、頂点ごとに累積→正規化→
+    グラムシュミット直交化→handedness 判定する。"""
+    n = len(vertex_buffer)
+    tan = [[0.0, 0.0, 0.0] for _ in range(n)]
+    bit = [[0.0, 0.0, 0.0] for _ in range(n)]
+    for t in range(0, len(index_buffer) - 2, 3):
+        i0, i1, i2 = index_buffer[t], index_buffer[t + 1], index_buffer[t + 2]
+        v0, v1, v2 = vertex_buffer[i0], vertex_buffer[i1], vertex_buffer[i2]
+        e1x, e1y, e1z = v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]
+        e2x, e2y, e2z = v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]
+        du1, dv1 = v1[4] - v0[4], v1[5] - v0[5]
+        du2, dv2 = v2[4] - v0[4], v2[5] - v0[5]
+        denom = du1 * dv2 - du2 * dv1
+        if abs(denom) < 1e-8:
+            continue  # UV が潰れた三角形はスキップ
+        r = 1.0 / denom
+        tx = (e1x * dv2 - e2x * dv1) * r
+        ty = (e1y * dv2 - e2y * dv1) * r
+        tz = (e1z * dv2 - e2z * dv1) * r
+        bx = (e2x * du1 - e1x * du2) * r
+        by = (e2y * du1 - e1y * du2) * r
+        bz = (e2z * du1 - e1z * du2) * r
+        for i in (i0, i1, i2):
+            tan[i][0] += tx; tan[i][1] += ty; tan[i][2] += tz
+            bit[i][0] += bx; bit[i][1] += by; bit[i][2] += bz
+    out = []
+    for i, v in enumerate(vertex_buffer):
+        nx, ny, nz = v[6], v[7], v[8]
+        tx, ty, tz = tan[i]
+        # グラムシュミット: t = normalize(t - n*dot(n,t))
+        d = nx * tx + ny * ty + nz * tz
+        tx -= nx * d; ty -= ny * d; tz -= nz * d
+        length = (tx * tx + ty * ty + tz * tz) ** 0.5
+        if length > 1e-8:
+            tx /= length; ty /= length; tz /= length
+        else:
+            tx, ty, tz = 1.0, 0.0, 0.0
+        # handedness: w = sign(dot(cross(n,t), bitangent))
+        cx = ny * tz - nz * ty
+        cy = nz * tx - nx * tz
+        cz = nx * ty - ny * tx
+        bx, by, bz = bit[i]
+        w = -1.0 if (cx * bx + cy * by + cz * bz) < 0.0 else 1.0
+        out.append((v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], tx, ty, tz, w))
+    return out
+
+
+# ============================================================
+# OBJ / MTL パース
+# ============================================================
+def _parse_mtl_for_texture(mtl_path: Path) -> str | None:
+    """.mtl 内で最初に登場する map_Kd のファイル名を返す"""
+    if not mtl_path.exists():
+        return None
+    with mtl_path.open("r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            tokens = line.split()
+            if tokens and tokens[0] == "map_Kd":
+                return tokens[1]
+    return None
+
+
+def _parse_mtl_for_normal(mtl_path: Path) -> str | None:
+    """.mtl 内の法線マップ指定（map_Bump / bump / norm）のファイル名を返す。
+    map_Bump は -bm 等のオプションが付くことがあるので、最後のトークンをパスとみなす。"""
+    if not mtl_path.exists():
+        return None
+    keys = ("map_Bump", "map_bump", "bump", "norm")
+    with mtl_path.open("r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            tokens = line.split()
+            if tokens and tokens[0] in keys and len(tokens) >= 2:
+                return tokens[-1]  # オプションを飛ばして末尾をファイル名とみなす
+    return None
+
+
+def _parse_mtl_all(mtl_path: Path) -> dict:
+    """.mtl の全 newmtl ブロックを解析し、マテリアル名 → {"map_Kd", "norm", "Kd"} を返す。
+
+    norm は map_Bump / map_bump / bump / norm のいずれか（末尾トークンをファイル名とみなす）。
+    Kd は拡散色 RGBA タプル（無ければ None）。d/Tr のアルファは簡易のため未対応（a=1）。
+    """
+    result: dict = {}
+    if not mtl_path.exists():
+        return result
+    norm_keys = ("map_Bump", "map_bump", "bump", "norm")
+    current: str | None = None
+    with mtl_path.open("r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            tokens = line.split()
+            if not tokens:
+                continue
+            kw = tokens[0]
+            if kw == "newmtl" and len(tokens) > 1:
+                current = tokens[1]
+                result[current] = {"map_Kd": None, "norm": None, "Kd": None}
+            elif current is None:
+                continue
+            elif kw == "map_Kd" and len(tokens) > 1:
+                result[current]["map_Kd"] = tokens[1]
+            elif kw == "Kd" and len(tokens) >= 4:
+                result[current]["Kd"] = (float(tokens[1]), float(tokens[2]), float(tokens[3]), 1.0)
+            elif kw in norm_keys and len(tokens) >= 2:
+                result[current]["norm"] = tokens[-1]
+    return result
+
+
+def _parse_obj(obj_path: Path):
+    """OBJ を読み positions / normals / texcoords / 三角形面リスト / 面ごとの usemtl / mtllib を返す。
+
+    tri_materials は triangles と並列で、各三角形が属する usemtl 名（未指定は None）。
+    """
+    positions: list[tuple[float, float, float]] = []
+    normals: list[tuple[float, float, float]] = []
+    texcoords: list[tuple[float, float]] = []
+    triangles: list[tuple] = []  # 各要素は ((pi,ti,ni), (pi,ti,ni), (pi,ti,ni))
+    tri_materials: list[str | None] = []  # triangles と並列
+    mtllib: str | None = None
+    current_mtl: str | None = None
+
+    with obj_path.open("r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            tokens = line.split()
+            if not tokens:
+                continue
+            kw = tokens[0]
+            if kw == "v":
+                positions.append((float(tokens[1]), float(tokens[2]), float(tokens[3])))
+            elif kw == "vn":
+                normals.append((float(tokens[1]), float(tokens[2]), float(tokens[3])))
+            elif kw == "vt":
+                texcoords.append((float(tokens[1]), float(tokens[2])))
+            elif kw == "f":
+                verts = []
+                for t in tokens[1:]:
+                    parts = t.split("/")
+                    pi = int(parts[0]) - 1
+                    ti = int(parts[1]) - 1 if len(parts) > 1 and parts[1] else -1
+                    ni = int(parts[2]) - 1 if len(parts) > 2 and parts[2] else -1
+                    verts.append((pi, ti, ni))
+                # 多角形は扇形三角形分割
+                for i in range(1, len(verts) - 1):
+                    triangles.append((verts[0], verts[i], verts[i + 1]))
+                    tri_materials.append(current_mtl)
+            elif kw == "usemtl":
+                current_mtl = tokens[1] if len(tokens) > 1 else None
+            elif kw == "mtllib":
+                mtllib = tokens[1]
+    return positions, normals, texcoords, triangles, tri_materials, mtllib
+
+
+# ============================================================
+# .mesh / .mat ビルド (v2)
+# ============================================================
+def _resolve_resource_path(src_path: Path, new_suffix: str) -> str:
+    """Assets/ 配下のソースパス → Resources/ 配下の対応パスに変換。
+
+    例: Assets/Models/Enemy/enemy.obj + ".mesh" → "Resources/Models/Enemy/enemy.mesh"
+    """
+    try:
+        rel = src_path.relative_to(ASSETS_DIR)
+    except ValueError:
+        return ""
+    out = RESOURCES_DIR / rel.with_suffix(new_suffix)
+    return out.as_posix()
+
+
+def _safe_name(name: str) -> str:
+    """マテリアル名などをファイル名に使える文字列に正規化する"""
+    return "".join(c if (c.isalnum() or c in "-_") else "_" for c in name).strip("_") or "mat"
+
+
+def _sibling_resource_path(base_resource_path: str, filename: str) -> str:
+    """Resources 相対パス（posix）の同一ディレクトリに filename を置いたパスを返す。
+
+    例: ("Resources/Models/X/x.mat", "x_body.mat") → "Resources/Models/X/x_body.mat"
+    """
+    if not base_resource_path:
+        return ""
+    parent = base_resource_path.rsplit("/", 1)[0] if "/" in base_resource_path else ""
+    return f"{parent}/{filename}" if parent else filename
+
+
+def _pad_string(s: str, length: int) -> bytes:
+    """UTF-8 エンコード + null 終端 + ゼロパディングで固定長バイト列にする"""
+    b = s.encode("utf-8")[: length - 1]
+    return b + b"\x00" * (length - len(b))
+
+
+def _fixed_path_bytes(path_str: str) -> bytes:
+    return _pad_string(path_str, MESH_PATH_LEN)
+
+
+def _build_obj_mesh_buffers(obj_path: Path):
+    """OBJ から頂点バッファ・インデックスバッファを構築する。
+
+    座標系変換は ModelInstance::LoadModel と一致させる:
+      - 三角形 winding を反転（v0, v1, v2 → v0, v2, v1）
+      - position.x と normal.x を反転
+      - texcoord.y を 1 - y に反転
+    """
+    positions, normals, texcoords, triangles, tri_materials, mtllib = _parse_obj(obj_path)
+
+    vertex_map: dict[tuple[int, int, int], int] = {}
+    vertex_buffer: list[tuple] = []
+    index_buffer: list[int] = []
+
+    # マテリアルごとに三角形をグルーピング（出現順を保持）。usemtl 未指定は None キー
+    mat_order: list[str | None] = []
+    mat_to_tris: dict[str | None, list[tuple]] = {}
+    for tri, mat in zip(triangles, tri_materials):
+        if mat not in mat_to_tris:
+            mat_to_tris[mat] = []
+            mat_order.append(mat)
+        mat_to_tris[mat].append(tri)
+
+    # submeshes = [(matname_or_None, index_start, index_count)]
+    submeshes: list[tuple] = []
+    for mat in mat_order:
+        index_start = len(index_buffer)
+        for tri in mat_to_tris[mat]:
+            # winding 反転: (v0, v1, v2) → (v0, v2, v1)
+            for v_key in (tri[0], tri[2], tri[1]):
+                if v_key in vertex_map:
+                    index_buffer.append(vertex_map[v_key])
+                    continue
+
+                pi, ti, ni = v_key
+                px, py, pz = positions[pi]
+                u = v = 0.0
+                if 0 <= ti < len(texcoords):
+                    u, v = texcoords[ti]
+                nx, ny, nz = (0.0, 0.0, 0.0)
+                if 0 <= ni < len(normals):
+                    nx, ny, nz = normals[ni]
+
+                # RH → LH: x 反転, V 反転
+                px = -px
+                nx = -nx
+                v = 1.0 - v
+
+                new_index = len(vertex_buffer)
+                vertex_map[v_key] = new_index
+                vertex_buffer.append((px, py, pz, 1.0, u, v, nx, ny, nz))
+                index_buffer.append(new_index)
+        submeshes.append((mat, index_start, len(index_buffer) - index_start))
+
+    # OBJ は tangent を持たないので UV+位置から計算（9要素→13要素）
+    vertex_buffer = _compute_tangents(vertex_buffer, index_buffer)
+    return vertex_buffer, index_buffer, submeshes, mtllib
+
+
+def _write_mesh_v2(out_path: Path,
+                   vertex_buffer: list[tuple],
+                   index_buffer: list[int],
+                   submeshes: list[tuple[int, int, str]],
+                   skeleton_path: str = "",
+                   skin_buffer: list[tuple] | None = None) -> None:
+    """共通 .mesh v2 ライター。
+
+    submeshes: [(index_start, index_count, material_path)]
+    skin_buffer: None または [(joint_idx[4], weights[4])] のリスト
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    vertex_count = len(vertex_buffer)
+    index_count = len(index_buffer)
+    submesh_count = len(submeshes)
+    has_skinning = skin_buffer is not None and len(skin_buffer) > 0
+    flags = MESH_FLAG_HAS_SKINNING if has_skinning else 0
+
+    # オフセット計算
+    vertex_offset = MESH_HEADER_SIZE
+    index_offset = vertex_offset + vertex_count * MESH_VERTEX_SIZE
+    skin_offset = 0
+    submesh_offset = index_offset + index_count * 4
+    if has_skinning:
+        skin_offset = submesh_offset
+        submesh_offset = skin_offset + vertex_count * MESH_SKIN_VERTEX_SIZE
+
+    with out_path.open("wb") as f:
+        # ---- Header (288 bytes) ----
+        f.write(MESH_MAGIC)
+        f.write(struct.pack("<IIIIIIIII",
+                            MESH_VERSION,
+                            flags,
+                            vertex_count,
+                            index_count,
+                            submesh_count,
+                            vertex_offset,
+                            index_offset,
+                            skin_offset,
+                            submesh_offset))
+        f.write(_fixed_path_bytes(skeleton_path))
+
+        # ---- Vertex Data ---- (v3: pos4 + uv2 + normal3 + tangent4 = 13 float)
+        for v in vertex_buffer:
+            f.write(struct.pack("<13f", *v))
+
+        # ---- Index Data ----
+        if index_count > 0:
+            f.write(struct.pack(f"<{index_count}I", *index_buffer))
+
+        # ---- Skin Data (HAS_SKINNING のみ) ----
+        if has_skinning:
+            for joint_indices, weights in skin_buffer:
+                f.write(struct.pack("<4I4f", *joint_indices, *weights))
+
+        # ---- Submesh Data ----
+        for (idx_start, idx_count, mat_path) in submeshes:
+            f.write(struct.pack("<II", idx_start, idx_count))
+            f.write(_fixed_path_bytes(mat_path))
+
+
+def _write_mat_v2(out_path: Path, base_color_path: str,
+                  color=MAT_DEFAULT_COLOR,
+                  enable_lighting=MAT_DEFAULT_ENABLE_LIGHTING,
+                  shininess=MAT_DEFAULT_SHININESS,
+                  env_coeff=MAT_DEFAULT_ENV_COEFF,
+                  use_env_map=MAT_DEFAULT_USE_ENV_MAP,
+                  metallic=MAT_DEFAULT_METALLIC,
+                  roughness=MAT_DEFAULT_ROUGHNESS,
+                  shading_model=MAT_DEFAULT_SHADING_MODEL,
+                  normal_map_path=MAT_DEFAULT_NORMAL_MAP) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("wb") as f:
+        f.write(MAT_MAGIC)
+        f.write(struct.pack("<I", MAT_VERSION))
+        f.write(_fixed_path_bytes(base_color_path))
+        f.write(struct.pack("<4f", *color))
+        f.write(struct.pack("<i", enable_lighting))
+        f.write(struct.pack("<f", shininess))
+        f.write(struct.pack("<f", env_coeff))
+        f.write(struct.pack("<i", use_env_map))
+        f.write(struct.pack("<f", metallic))
+        f.write(struct.pack("<f", roughness))
+        f.write(struct.pack("<i", shading_model))
+        f.write(_fixed_path_bytes(normal_map_path))
+
+
+# ============================================================
+# .skel / .anim フォーマット定数
+# ============================================================
+SKEL_MAGIC = b"SKEL"
+SKEL_VERSION = 1
+SKEL_HEADER_SIZE = 16
+SKEL_JOINT_SIZE = 64 + 4 + 64 + 12 + 16 + 12  # 172
+
+ANIM_MAGIC = b"ANIM"
+ANIM_VERSION = 1
+ANIM_HEADER_SIZE = 24
+ANIM_CHANNEL_SIZE = 64 + 6 * 4  # 88
+
+# ============================================================
+# glTF 読み込みヘルパー
+# ============================================================
+_GLTF_COMP = {
+    5120: ("b", 1),  # BYTE
+    5121: ("B", 1),  # UNSIGNED_BYTE
+    5122: ("h", 2),  # SHORT
+    5123: ("H", 2),  # UNSIGNED_SHORT
+    5125: ("I", 4),  # UNSIGNED_INT
+    5126: ("f", 4),  # FLOAT
+}
+_GLTF_TYPE_N = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4,
+                "MAT2": 4, "MAT3": 9, "MAT4": 16}
+
+
+def _gltf_load(gltf_path: Path):
+    """glTF JSON と参照する全 .bin を読み込む"""
+    with gltf_path.open("r", encoding="utf-8") as f:
+        gltf = json.load(f)
+    buffers = []
+    for buf in gltf.get("buffers", []):
+        uri = buf.get("uri", "")
+        if uri.startswith("data:"):
+            raise RuntimeError("base64 buffer URIs not supported")
+        if uri:
+            # uri は RFC3986 パーセントエンコードされ得るのでデコードして実ファイル名にする
+            uri = urllib.parse.unquote(uri)
+            buffers.append((gltf_path.parent / uri).read_bytes())
+        else:
+            buffers.append(b"")
+    return gltf, buffers
+
+
+def _gltf_read_accessor(gltf, buffers, accessor_idx):
+    """アクセサを読んで要素のリストを返す（SCALAR は値のリスト、VEC*/MAT* はタプルのリスト）"""
+    acc = gltf["accessors"][accessor_idx]
+    bv_idx = acc.get("bufferView")
+    if bv_idx is None:
+        # sparse accessor は未対応、ゼロ埋め
+        return [0] * acc["count"]
+    bv = gltf["bufferViews"][bv_idx]
+    buffer = buffers[bv["buffer"]]
+    base_ofs = bv.get("byteOffset", 0) + acc.get("byteOffset", 0)
+    count = acc["count"]
+    fmt_char, comp_size = _GLTF_COMP[acc["componentType"]]
+    n = _GLTF_TYPE_N[acc["type"]]
+    elem_size = comp_size * n
+    stride = bv.get("byteStride", elem_size)
+    out = []
+    for i in range(count):
+        ofs = base_ofs + i * stride
+        vals = struct.unpack(f"<{n}{fmt_char}", buffer[ofs:ofs + elem_size])
+        out.append(vals[0] if acc["type"] == "SCALAR" else vals)
+    return out
+
+
+# ============================================================
+# RH → LH 座標変換ヘルパー (X 軸反転)
+# ============================================================
+def _mirror_x_translation(t):
+    return (-t[0], t[1], t[2])
+
+
+def _mirror_x_rotation(r):
+    # quaternion (x, y, z, w) で Y/Z を反転
+    return (r[0], -r[1], -r[2], r[3])
+
+
+def _mirror_x_matrix4(m):
+    """4x4 列優先行列に MirrorX * M * MirrorX を適用。
+    成分 m[i + 4*j] = M[i][j]。
+    結果: (行 0 ⊕ 列 0) の片方だけ true なら符号反転、両方 false / 両方 true なら不変。
+    """
+    out = list(m)
+    for i in range(4):
+        for j in range(4):
+            if (i == 0) != (j == 0):
+                out[i + 4 * j] = -out[i + 4 * j]
+    return tuple(out)
+
+
+# ============================================================
+# 4x4 行列ヘルパー（行優先・列ベクトル規約 v' = M·v）
+# 静的メッシュにノード階層の transform をベイクするために使う。
+# ============================================================
+_MAT_IDENTITY = ((1.0, 0.0, 0.0, 0.0),
+                 (0.0, 1.0, 0.0, 0.0),
+                 (0.0, 0.0, 1.0, 0.0),
+                 (0.0, 0.0, 0.0, 1.0))
+
+
+def _mat_mul(a, b):
+    """行優先 4x4 同士の積 a·b"""
+    return tuple(
+        tuple(sum(a[i][k] * b[k][j] for k in range(4)) for j in range(4))
+        for i in range(4)
+    )
+
+
+def _mat_transform_point(m, p):
+    """点 (px,py,pz) を M で変換（w=1）"""
+    px, py, pz = p
+    return (m[0][0] * px + m[0][1] * py + m[0][2] * pz + m[0][3],
+            m[1][0] * px + m[1][1] * py + m[1][2] * pz + m[1][3],
+            m[2][0] * px + m[2][1] * py + m[2][2] * pz + m[2][3])
+
+
+def _mat_transform_dir(m, d):
+    """方向ベクトル (dx,dy,dz) を M の上 3x3 で変換（平行移動なし）"""
+    dx, dy, dz = d
+    return (m[0][0] * dx + m[0][1] * dy + m[0][2] * dz,
+            m[1][0] * dx + m[1][1] * dy + m[1][2] * dz,
+            m[2][0] * dx + m[2][1] * dy + m[2][2] * dz)
+
+
+def _mat_from_node(node):
+    """glTF ノードのローカル変換行列（行優先）を返す。
+    node.matrix があればそれ（列優先→行優先に転置）、無ければ T·R·S を合成。"""
+    if "matrix" in node:
+        m = node["matrix"]  # 列優先 flat 16
+        return tuple(tuple(m[j * 4 + i] for j in range(4)) for i in range(4))
+
+    tx, ty, tz = node.get("translation", (0.0, 0.0, 0.0))
+    x, y, z, w = node.get("rotation", (0.0, 0.0, 0.0, 1.0))
+    sx, sy, sz = node.get("scale", (1.0, 1.0, 1.0))
+
+    # 回転 3x3（列ベクトル規約）
+    xx, yy, zz = x * x, y * y, z * z
+    xy, xz, yz = x * y, x * z, y * z
+    wx, wy, wz = w * x, w * y, w * z
+    r = (
+        (1 - 2 * (yy + zz), 2 * (xy - wz),     2 * (xz + wy)),
+        (2 * (xy + wz),     1 - 2 * (xx + zz), 2 * (yz - wx)),
+        (2 * (xz - wy),     2 * (yz + wx),     1 - 2 * (xx + yy)),
+    )
+    s = (sx, sy, sz)
+    # 上 3x3 = R·diag(S)（各列を scale 倍）+ 平行移動を最終列に
+    return (
+        (r[0][0] * s[0], r[0][1] * s[1], r[0][2] * s[2], tx),
+        (r[1][0] * s[0], r[1][1] * s[1], r[1][2] * s[2], ty),
+        (r[2][0] * s[0], r[2][1] * s[1], r[2][2] * s[2], tz),
+        (0.0, 0.0, 0.0, 1.0),
+    )
+
+
+# ============================================================
+# glTF → メッシュ抽出
+# ============================================================
+def _gltf_extract_mesh(gltf, buffers, joint_index_offset: int = 0):
+    """全メッシュ・全プリミティブから (vertex_buffer, index_buffer, skin_buffer, submeshes) を構築。
+
+    primitive 1 個 = submesh 1 個としてマテリアルを分離する。頂点/インデックスは
+    1 本のバッファに連結し、submesh ごとに index 範囲とマテリアル index を記録する。
+
+    joint_index_offset: 祖先ジョイントを .skel 先頭に追加した分、頂点の JOINTS_0
+    に加算するオフセット
+
+    Returns:
+        (vertex_buffer, index_buffer, skin_buffer_or_None, submeshes)
+        submeshes = [(material_index_or_None, index_start, index_count)]
+    """
+    meshes = gltf.get("meshes", [])
+    if not meshes:
+        raise RuntimeError("no meshes in glTF")
+    nodes = gltf.get("nodes", [])
+
+    vertex_buffer: list[tuple] = []
+    index_buffer: list[int] = []
+    skin_buffer: list[tuple] = []
+    submeshes: list[tuple] = []
+    state = {"any_skinning": False}
+
+    def process_primitive(prim, world):
+        """1 プリミティブを world 行列（ノード階層のワールド変換）でベイクして連結する。
+        スキン付きは skin 行列が配置を担うので world は単位行列（呼び出し側で指定）。"""
+        attrs = prim.get("attributes", {})
+        if "POSITION" not in attrs:
+            return
+
+        positions = _gltf_read_accessor(gltf, buffers, attrs["POSITION"])
+        normals = _gltf_read_accessor(gltf, buffers, attrs["NORMAL"]) if "NORMAL" in attrs else None
+        texcoords = _gltf_read_accessor(gltf, buffers, attrs["TEXCOORD_0"]) if "TEXCOORD_0" in attrs else None
+        joints_attr = _gltf_read_accessor(gltf, buffers, attrs["JOINTS_0"]) if "JOINTS_0" in attrs else None
+        weights_attr = _gltf_read_accessor(gltf, buffers, attrs["WEIGHTS_0"]) if "WEIGHTS_0" in attrs else None
+        tangents_attr = _gltf_read_accessor(gltf, buffers, attrs["TANGENT"]) if "TANGENT" in attrs else None
+
+        indices_idx = prim.get("indices")
+        if indices_idx is None:
+            raw_indices = list(range(len(positions)))
+        else:
+            raw_indices = _gltf_read_accessor(gltf, buffers, indices_idx)
+
+        has_skinning = joints_attr is not None and weights_attr is not None
+        # スキン付きプリミティブはノード変換を無視（skin が配置を担う）
+        wm = _MAT_IDENTITY if has_skinning else world
+        identity_world = wm is _MAT_IDENTITY
+
+        local_vb: list[tuple] = []
+        local_skin: list[tuple] = []
+        for i in range(len(positions)):
+            px, py, pz = positions[i]
+            u, v = (texcoords[i] if texcoords else (0.0, 0.0))
+            nx, ny, nz = (normals[i] if normals else (0.0, 1.0, 0.0))
+
+            # ノード階層のワールド変換をベイク（glTF の RH 空間のまま）
+            if not identity_world:
+                px, py, pz = _mat_transform_point(wm, (px, py, pz))
+                nx, ny, nz = _mat_transform_dir(wm, (nx, ny, nz))
+                nlen = (nx * nx + ny * ny + nz * nz) ** 0.5
+                if nlen > 1e-8:
+                    nx, ny, nz = nx / nlen, ny / nlen, nz / nlen
+
+            # RH → LH
+            px = -px
+            nx = -nx
+            v = 1.0 - v
+            if tangents_attr:
+                tgx, tgy, tgz, tgw = tangents_attr[i]
+                if not identity_world:
+                    tgx, tgy, tgz = _mat_transform_dir(wm, (tgx, tgy, tgz))
+                    tlen = (tgx * tgx + tgy * tgy + tgz * tgz) ** 0.5
+                    if tlen > 1e-8:
+                        tgx, tgy, tgz = tgx / tlen, tgy / tlen, tgz / tlen
+                # RH→LH: tangent.x 反転、handedness(w) 反転
+                local_vb.append((px, py, pz, 1.0, u, v, nx, ny, nz, -tgx, tgy, tgz, -tgw))
+            else:
+                local_vb.append((px, py, pz, 1.0, u, v, nx, ny, nz))
+
+            if has_skinning:
+                j = joints_attr[i]
+                w = weights_attr[i]
+                local_skin.append((tuple(int(x) + joint_index_offset for x in j),
+                                   tuple(float(x) for x in w)))
+            else:
+                # スキン混在時にバッファ長を頂点数に合わせるためのゼロ影響ダミー
+                local_skin.append(((0, 0, 0, 0), (0.0, 0.0, 0.0, 0.0)))
+
+        # winding 反転 (a, b, c) → (a, c, b)。インデックスはプリミティブ内ローカル基準
+        local_ib: list[int] = []
+        for i in range(0, len(raw_indices), 3):
+            a, b, c = raw_indices[i], raw_indices[i + 1], raw_indices[i + 2]
+            local_ib.extend([a, c, b])
+
+        # TANGENT 属性が無いなら UV+位置から計算（9要素→13要素）
+        if not tangents_attr:
+            local_vb = _compute_tangents(local_vb, local_ib)
+
+        # 連結: ローカルインデックスに base_vertex を足してグローバル化
+        base_vertex = len(vertex_buffer)
+        index_start = len(index_buffer)
+        index_buffer.extend(idx + base_vertex for idx in local_ib)
+        vertex_buffer.extend(local_vb)
+        skin_buffer.extend(local_skin)
+        if has_skinning:
+            state["any_skinning"] = True
+
+        submeshes.append((prim.get("material"), index_start, len(local_ib)))
+
+    # シーンのノードツリーを走査し、各 mesh ノードにワールド変換を適用して抽出
+    def walk(node_idx, parent_world):
+        if node_idx < 0 or node_idx >= len(nodes):
+            return
+        node = nodes[node_idx]
+        world = _mat_mul(parent_world, _mat_from_node(node))
+        mesh_idx = node.get("mesh")
+        if mesh_idx is not None and 0 <= mesh_idx < len(meshes):
+            for prim in meshes[mesh_idx].get("primitives", []):
+                process_primitive(prim, world)
+        for child in node.get("children", []):
+            walk(child, world)
+
+    scenes = gltf.get("scenes", [])
+    scene_idx = gltf.get("scene", 0)
+    root_nodes = []
+    if scenes and 0 <= scene_idx < len(scenes):
+        root_nodes = scenes[scene_idx].get("nodes", [])
+    for r in root_nodes:
+        walk(r, _MAT_IDENTITY)
+
+    # フォールバック: ノードから 1 つも mesh を辿れなかった場合は従来通りフラットに読む
+    if not submeshes:
+        for mesh in meshes:
+            for prim in mesh.get("primitives", []):
+                process_primitive(prim, _MAT_IDENTITY)
+
+    if not submeshes:
+        raise RuntimeError("no primitives with POSITION in glTF")
+
+    return vertex_buffer, index_buffer, (skin_buffer if state["any_skinning"] else None), submeshes
+
+
+# ============================================================
+# glTF → スケルトン抽出
+# ============================================================
+def _gltf_extract_skeleton(gltf, buffers):
+    """skin[0] からジョイントリストを構築する。
+
+    skin.joints に含まれない祖先ノード（Armature 等）も .skel に含める。
+    これによりシーンルートの transform（90° 回転 / 0.01 スケール等）を保持できる。
+
+    Returns:
+        (joints, joint_index_offset)
+        joint_index_offset = 祖先ジョイントの個数（頂点の JOINTS_0 はこの分シフト必要）
+    """
+    skins = gltf.get("skins", [])
+    if not skins:
+        return None, 0
+    skin = skins[0]
+    skin_joint_nodes = skin["joints"]
+
+    inv_bind_matrices = None
+    if "inverseBindMatrices" in skin:
+        inv_bind_matrices = _gltf_read_accessor(gltf, buffers, skin["inverseBindMatrices"])
+
+    nodes = gltf.get("nodes", [])
+    # ノード → 親ノードのマップ
+    node_parent = {}
+    for parent_idx, node in enumerate(nodes):
+        for child_idx in node.get("children", []):
+            node_parent[child_idx] = parent_idx
+
+    # skin.joints に含まれない祖先ノードを集める
+    skin_joint_set = set(skin_joint_nodes)
+    ancestor_set: set[int] = set()
+    for jn in skin_joint_nodes:
+        cur = node_parent.get(jn)
+        while cur is not None and cur not in skin_joint_set:
+            ancestor_set.add(cur)
+            cur = node_parent.get(cur)
+
+    # 祖先をトポロジカル順（親→子）に並べる: ルートから BFS
+    ancestor_list: list[int] = []
+    if ancestor_set:
+        # 祖先内のルート（親が祖先外にあるもの）から開始
+        ancestor_roots = [a for a in ancestor_set
+                          if node_parent.get(a) not in ancestor_set]
+        ancestor_roots.sort()
+        queue = list(ancestor_roots)
+        while queue:
+            cur = queue.pop(0)
+            ancestor_list.append(cur)
+            for child in nodes[cur].get("children", []):
+                if child in ancestor_set and child not in ancestor_list:
+                    queue.append(child)
+
+    # 最終順序: 祖先 → skin.joints
+    all_joint_nodes = ancestor_list + list(skin_joint_nodes)
+    node_to_joint = {n: i for i, n in enumerate(all_joint_nodes)}
+
+    joints = []
+    for j_idx, n_idx in enumerate(all_joint_nodes):
+        node = nodes[n_idx]
+        name = node.get("name", f"joint_{j_idx}")
+
+        parent_node = node_parent.get(n_idx)
+        parent_joint = node_to_joint.get(parent_node, -1) if parent_node is not None else -1
+
+        # 祖先ノードは skin.joints に含まれないので IBM は単位行列
+        is_skin_joint = n_idx in skin_joint_set
+        if is_skin_joint and inv_bind_matrices is not None:
+            skin_idx = skin_joint_nodes.index(n_idx)
+            ibm = inv_bind_matrices[skin_idx]
+        else:
+            ibm = (1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)
+        ibm_lh = _mirror_x_matrix4(ibm)
+
+        t = tuple(node.get("translation", [0.0, 0.0, 0.0]))
+        r = tuple(node.get("rotation", [0.0, 0.0, 0.0, 1.0]))
+        s = tuple(node.get("scale", [1.0, 1.0, 1.0]))
+
+        if "matrix" in node:
+            print(f"  [WARN] joint '{name}' has node.matrix; decomposition not implemented")
+
+        joints.append({
+            "name": name,
+            "parent_index": parent_joint,
+            "inverse_bind_matrix": ibm_lh,
+            "bind_t": _mirror_x_translation(t),
+            "bind_r": _mirror_x_rotation(r),
+            "bind_s": s,
+        })
+    return joints, len(ancestor_list)
+
+
+# ============================================================
+# glTF → アニメーション抽出
+# ============================================================
+def _gltf_extract_animations(gltf, buffers):
+    """各アニメーションをジョイント名でグループ化された channels に整形して返す"""
+    animations = gltf.get("animations", [])
+    nodes = gltf.get("nodes", [])
+    out = []
+    for anim_idx, anim in enumerate(animations):
+        channels = anim.get("channels", [])
+        samplers = anim.get("samplers", [])
+
+        joint_channels: dict[str, dict] = {}
+        max_time = 0.0
+
+        for ch in channels:
+            target = ch["target"]
+            node_idx = target.get("node")
+            path = target["path"]
+            if node_idx is None or path == "weights":
+                continue  # morph target は未対応
+            joint_name = nodes[node_idx].get("name", f"node_{node_idx}")
+
+            sampler = samplers[ch["sampler"]]
+            interp = sampler.get("interpolation", "LINEAR")
+            if interp != "LINEAR":
+                print(f"  [WARN] non-linear '{interp}' on {joint_name}/{path}; treated as LINEAR")
+
+            times = _gltf_read_accessor(gltf, buffers, sampler["input"])
+            values = _gltf_read_accessor(gltf, buffers, sampler["output"])
+
+            if joint_name not in joint_channels:
+                joint_channels[joint_name] = {"t": [], "r": [], "s": []}
+
+            keys = []
+            for time, val in zip(times, values):
+                if time > max_time:
+                    max_time = time
+                if path == "translation":
+                    keys.append((time, _mirror_x_translation(val)))
+                elif path == "rotation":
+                    keys.append((time, _mirror_x_rotation(val)))
+                elif path == "scale":
+                    keys.append((time, val))
+            if path == "translation":
+                joint_channels[joint_name]["t"] = keys
+            elif path == "rotation":
+                joint_channels[joint_name]["r"] = keys
+            elif path == "scale":
+                joint_channels[joint_name]["s"] = keys
+
+        out.append({
+            "name": anim.get("name", f"anim_{anim_idx}"),
+            "duration": max_time,
+            "channels": joint_channels,
+        })
+    return out
+
+
+# ============================================================
+# glTF → base_color テクスチャパス解決
+# ============================================================
+def _gltf_find_pbr_factors(gltf, mat_index: int = 0):
+    """指定マテリアルから metallicFactor / roughnessFactor を返す（無ければ glTF 既定の 1.0）"""
+    materials = gltf.get("materials", [])
+    if not materials or mat_index < 0 or mat_index >= len(materials):
+        return (MAT_DEFAULT_METALLIC, MAT_DEFAULT_ROUGHNESS)
+    pbr = materials[mat_index].get("pbrMetallicRoughness", {})
+    metallic = float(pbr.get("metallicFactor", 1.0))
+    roughness = float(pbr.get("roughnessFactor", 1.0))
+    return (metallic, roughness)
+
+
+def _gltf_find_base_color_factor(gltf, mat_index: int = 0):
+    """指定マテリアルの baseColorFactor(RGBA) を返す（無ければ白）。
+    テクスチャ無しマテリアルの色付けに使う（.mat の color に書き込む）。"""
+    materials = gltf.get("materials", [])
+    if not materials or mat_index < 0 or mat_index >= len(materials):
+        return MAT_DEFAULT_COLOR
+    pbr = materials[mat_index].get("pbrMetallicRoughness", {})
+    bcf = pbr.get("baseColorFactor")
+    if bcf and len(bcf) == 4:
+        return (float(bcf[0]), float(bcf[1]), float(bcf[2]), float(bcf[3]))
+    return MAT_DEFAULT_COLOR
+
+
+def _gltf_find_normal_map_path(gltf, gltf_path: Path, mat_index: int = 0) -> str:
+    """指定マテリアルの normalTexture から Resources 相対の DDS パスを返す（無ければ空）"""
+    materials = gltf.get("materials", [])
+    if not materials or mat_index < 0 or mat_index >= len(materials):
+        return ""
+    nrm = materials[mat_index].get("normalTexture", {})
+    if "index" not in nrm:
+        return ""
+    textures = gltf.get("textures", [])
+    if nrm["index"] >= len(textures):
+        return ""
+    image_idx = textures[nrm["index"]].get("source")
+    images = gltf.get("images", [])
+    if image_idx is None or image_idx >= len(images):
+        return ""
+    uri = images[image_idx].get("uri", "")
+    if not uri or uri.startswith("data:"):
+        return ""
+    # glTF の uri は RFC3986 パーセントエンコード。ディスク上の実ファイル名に合わせてデコードする
+    uri = urllib.parse.unquote(uri)
+    try:
+        rel = gltf_path.relative_to(ASSETS_DIR)
+        return (RESOURCES_DIR / (rel.parent / uri).with_suffix(".dds")).as_posix()
+    except ValueError:
+        return ""
+
+
+def _gltf_find_base_color_path(gltf, gltf_path: Path, mat_index: int = 0) -> str:
+    materials = gltf.get("materials", [])
+    if not materials or mat_index < 0 or mat_index >= len(materials):
+        return ""
+    pbr = materials[mat_index].get("pbrMetallicRoughness", {})
+    base = pbr.get("baseColorTexture", {})
+    if "index" not in base:
+        return ""
+    texture_idx = base["index"]
+    textures = gltf.get("textures", [])
+    if texture_idx >= len(textures):
+        return ""
+    image_idx = textures[texture_idx].get("source")
+    if image_idx is None:
+        return ""
+    images = gltf.get("images", [])
+    if image_idx >= len(images):
+        return ""
+    uri = images[image_idx].get("uri", "")
+    if not uri or uri.startswith("data:"):
+        return ""
+    # glTF の uri は RFC3986 パーセントエンコード。ディスク上の実ファイル名に合わせてデコードする
+    uri = urllib.parse.unquote(uri)
+    try:
+        rel = gltf_path.relative_to(ASSETS_DIR)
+        tex_in_assets = rel.parent / uri
+        return (RESOURCES_DIR / tex_in_assets.with_suffix(".dds")).as_posix()
+    except ValueError:
+        return ""
+
+
+# ============================================================
+# .skel / .anim ライター
+# ============================================================
+def _write_skel_v1(out_path: Path, joints: list[dict]) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("wb") as f:
+        f.write(SKEL_MAGIC)
+        f.write(struct.pack("<III", SKEL_VERSION, len(joints), 0))
+        for j in joints:
+            f.write(_pad_string(j["name"], 64))
+            f.write(struct.pack("<i", j["parent_index"]))
+            f.write(struct.pack("<16f", *j["inverse_bind_matrix"]))
+            f.write(struct.pack("<3f", *j["bind_t"]))
+            f.write(struct.pack("<4f", *j["bind_r"]))
+            f.write(struct.pack("<3f", *j["bind_s"]))
+
+
+def _write_anim_v1(out_path: Path, anim: dict) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    items = list(anim["channels"].items())
+    channels_offset = ANIM_HEADER_SIZE
+    keyframes_start = channels_offset + len(items) * ANIM_CHANNEL_SIZE
+
+    # 各チャンネルのキーフレームオフセットを事前計算
+    cursor = keyframes_start
+    ch_layouts = []
+    for _, data in items:
+        tc, rc, sc = len(data["t"]), len(data["r"]), len(data["s"])
+        t_ofs = cursor; cursor += tc * 16   # TKey = time(4) + vec3(12)
+        r_ofs = cursor; cursor += rc * 20   # RKey = time(4) + vec4(16)
+        s_ofs = cursor; cursor += sc * 16   # SKey = time(4) + vec3(12)
+        ch_layouts.append((tc, rc, sc, t_ofs, r_ofs, s_ofs))
+
+    with out_path.open("wb") as f:
+        # Header
+        f.write(ANIM_MAGIC)
+        f.write(struct.pack("<I", ANIM_VERSION))
+        f.write(struct.pack("<f", anim["duration"]))
+        f.write(struct.pack("<I", len(items)))
+        f.write(struct.pack("<I", channels_offset))
+        f.write(struct.pack("<I", 0))  # reserved
+        # Channels
+        for (name, _), (tc, rc, sc, t_ofs, r_ofs, s_ofs) in zip(items, ch_layouts):
+            f.write(_pad_string(name, 64))
+            f.write(struct.pack("<IIIIII", tc, rc, sc, t_ofs, r_ofs, s_ofs))
+        # Keyframe data
+        for (_, data) in items:
+            for t, v in data["t"]:
+                f.write(struct.pack("<f3f", t, *v))
+            for t, v in data["r"]:
+                f.write(struct.pack("<f4f", t, *v))
+            for t, v in data["s"]:
+                f.write(struct.pack("<f3f", t, *v))
+
+
+# ============================================================
+# glTF → .mesh + .skel + .mat + .anim 変換
+# ============================================================
+def convert_gltf_to_mesh(task: FileTask) -> bool:
+    """glTF を 4 分割アセット (.mesh + .skel + .mat + .anim) に変換する"""
+    assert task.dst is not None
+
+    try:
+        gltf, buffers = _gltf_load(task.src)
+    except Exception as e:
+        print(f"  [ERROR] gltf load failed: {e}")
+        return False
+
+    # スケルトンを先に抽出して祖先ジョイントの数（オフセット）を得る
+    skel, joint_offset = _gltf_extract_skeleton(gltf, buffers)
+
+    try:
+        vb, ib, skin_buffer, raw_submeshes = _gltf_extract_mesh(gltf, buffers, joint_offset)
+    except Exception as e:
+        print(f"  [ERROR] mesh extraction failed: {e}")
+        return False
+
+    has_skinning = (skel is not None) and (skin_buffer is not None)
+
+    # 出力先パス
+    stem = task.src.stem
+    out_dir = task.dst.parent
+    mesh_path = task.dst                       # *.mesh
+    skel_path = out_dir / f"{stem}.skel"
+
+    # 参照用 (Resources 相対) パス
+    mat_resource_base = _resolve_resource_path(task.src, ".mat")  # 例: Resources/.../stem.mat
+    skel_resource_path = _resolve_resource_path(task.src, ".skel") if has_skinning else ""
+
+    materials = gltf.get("materials", [])
+    # このメッシュで実際に使われる material index（重複排除・出現順）
+    used_mat_indices = []
+    for (mat_idx, _s, _c) in raw_submeshes:
+        if mat_idx not in used_mat_indices:
+            used_mat_indices.append(mat_idx)
+    single_material = len(used_mat_indices) <= 1
+
+    # material index → 出力した .mat の Resources 相対パス
+    mat_path_cache: dict = {}
+    for mat_idx in used_mat_indices:
+        # .mat 値（glTF は PBR 形式）
+        real_idx = mat_idx if mat_idx is not None else 0
+        base_color_path = _gltf_find_base_color_path(gltf, task.src, real_idx)
+        metallic, roughness = _gltf_find_pbr_factors(gltf, real_idx)
+        normal_map_path = _gltf_find_normal_map_path(gltf, task.src, real_idx)
+        base_color_factor = _gltf_find_base_color_factor(gltf, real_idx)
+
+        # 法線マップの有無だけを PBR 切替のトリガーにする。
+        # metallic/roughness の有無は使えない: _gltf_find_pbr_factors は未指定時に
+        # glTF 既定の 1.0/1.0 を返し、かつ既存のアニメモデル(walk/sneakWalk/BrainStem)は
+        # いずれも metallicFactor を明示済みなので、それを条件にすると軒並み PBR へ倒れて
+        # 既存の見た目が壊れる。normalTexture を持つのは新規に作る素材だけ。
+        shading_model = 1 if normal_map_path else MAT_DEFAULT_SHADING_MODEL
+
+        # 単一マテリアルは従来通り stem.mat（後方互換）。複数はマテリアル名/index でサフィックス
+        if single_material:
+            mat_filename = f"{stem}.mat"
+        else:
+            mat_name = ""
+            if 0 <= real_idx < len(materials):
+                mat_name = materials[real_idx].get("name", "")
+            suffix = _safe_name(mat_name) if mat_name else f"mat{real_idx}"
+            mat_filename = f"{stem}_{suffix}.mat"
+
+        # baseColorFactor を color に反映（テクスチャ無しマテリアルの色付け。テクスチャ有りでも tint として乗る）
+        _write_mat_v2(out_dir / mat_filename, base_color_path,
+                      color=base_color_factor,
+                      metallic=metallic, roughness=roughness,
+                      shading_model=shading_model,
+                      normal_map_path=normal_map_path)
+        mat_path_cache[mat_idx] = _sibling_resource_path(mat_resource_base, mat_filename)
+
+    # .skel
+    if has_skinning:
+        _write_skel_v1(skel_path, skel)
+
+    # .mesh（submesh ごとに index 範囲 + material_path）
+    submeshes = [(start, count, mat_path_cache[mat_idx])
+                 for (mat_idx, start, count) in raw_submeshes]
+    _write_mesh_v2(mesh_path, vb, ib, submeshes,
+                   skeleton_path=skel_resource_path,
+                   skin_buffer=skin_buffer if has_skinning else None)
+
+    # .anim (複数あれば stem_<name>.anim、単一なら stem.anim)
+    animations = _gltf_extract_animations(gltf, buffers)
+    for i, anim in enumerate(animations):
+        if len(animations) == 1:
+            anim_path = out_dir / f"{stem}.anim"
+        else:
+            safe_name = anim["name"].replace("/", "_").replace(" ", "_")
+            anim_path = out_dir / f"{stem}_{safe_name}.anim"
+        _write_anim_v1(anim_path, anim)
+
+    print(f"  vc={len(vb)} ic={len(ib)} skin={has_skinning} "
+          f"joints={len(skel) if skel else 0} anims={len(animations)} "
+          f"submeshes={len(submeshes)} mats={len(mat_path_cache)}")
+    return True
+
+
+# ============================================================
+# 個別の変換ロジック
+# ============================================================
+def convert_obj_to_mesh(task: FileTask) -> bool:
+    """OBJ を .mesh v2 + .mat に変換する。
+
+    usemtl ごとに submesh を分離し、マテリアル単位で .mat を出力する。
+    単一マテリアルは従来通り stem.mat（後方互換）、複数は stem_<matname>.mat。
+    """
+    assert task.dst is not None
+    try:
+        vb, ib, raw_submeshes, mtllib = _build_obj_mesh_buffers(task.src)
+    except Exception as e:
+        print(f"  [ERROR] OBJ parse failed: {e}")
+        return False
+
+    if not vb:
+        print(f"  [ERROR] no vertices produced from {task.src}")
+        return False
+
+    stem = task.dst.stem
+    out_dir = task.dst.parent
+    mat_resource_base = _resolve_resource_path(task.src, ".mat")
+
+    # .mtl のテクスチャ名 → Resources/.../{name}.dds に変換するヘルパー
+    def _mtl_tex_to_resource(tex_name: str) -> str:
+        try:
+            rel = task.src.relative_to(ASSETS_DIR)
+            tex_in_assets = rel.parent / tex_name
+            return (RESOURCES_DIR / tex_in_assets.with_suffix(".dds")).as_posix()
+        except ValueError:
+            return ""
+
+    # .mtl の全マテリアル情報（無い場合は空 dict）
+    mtl_all = _parse_mtl_all(task.src.parent / mtllib) if mtllib else {}
+
+    # submesh で使われるマテリアル名（出現順・重複排除）
+    used_mats = []
+    for (mat_name, _s, _c) in raw_submeshes:
+        if mat_name not in used_mats:
+            used_mats.append(mat_name)
+    single_material = len(used_mats) <= 1
+
+    # マテリアル名 → 出力した .mat の Resources 相対パス
+    mat_path_cache: dict = {}
+    for mat_name in used_mats:
+        info = mtl_all.get(mat_name, {}) if mat_name is not None else {}
+        base_color_path = _mtl_tex_to_resource(info["map_Kd"]) if info.get("map_Kd") else ""
+        normal_map_path = _mtl_tex_to_resource(info["norm"]) if info.get("norm") else ""
+        kd_color = info.get("Kd") or MAT_DEFAULT_COLOR
+
+        if single_material:
+            mat_filename = f"{stem}.mat"
+        else:
+            suffix = _safe_name(mat_name) if mat_name else f"mat{len(mat_path_cache)}"
+            mat_filename = f"{stem}_{suffix}.mat"
+
+        # OBJ/MTL は metallic/roughness を持たないのでデフォルト（BlinnPhong）。Kd を color に反映
+        _write_mat_v2(out_dir / mat_filename, base_color_path,
+                      color=kd_color, normal_map_path=normal_map_path)
+        mat_path_cache[mat_name] = _sibling_resource_path(mat_resource_base, mat_filename)
+
+    # ---- .mesh の出力（submesh ごとに index 範囲 + material_path）----
+    submeshes = [(start, count, mat_path_cache[mat_name])
+                 for (mat_name, start, count) in raw_submeshes]
+    _write_mesh_v2(task.dst, vb, ib, submeshes, skeleton_path="", skin_buffer=None)
+
+    print(f"  vertices={len(vb)} indices={len(ib)} submeshes={len(submeshes)} "
+          f"mats={len(mat_path_cache)} -> {task.dst.name}")
+    return True
+
+
+def convert_png_to_dds(task: FileTask) -> bool:
+    """PNG を BC7 DDS に変換する"""
+    if not TEXCONV.exists():
+        print(f"  [ERROR] {TEXCONV} が見つかりません")
+        return False
+
+    assert task.dst is not None
+    task.dst.parent.mkdir(parents=True, exist_ok=True)
+
+    # マスク等は線形保持、それ以外は SRGB
+    # ヒントはパス要素の「部分一致」で判定する（例: フォルダ名 "NormalMapTexture" も拾う）
+    is_linear = any(hint in part for part in task.src.parts for hint in LINEAR_TEXTURE_HINTS)
+    fmt = "BC7_UNORM" if is_linear else "BC7_UNORM_SRGB"
+
+    cmd = [
+        str(TEXCONV),
+        "-nologo",
+        "-y",
+        "-f", fmt,
+        "-bc", "x",  # x = max quality BC compression mode
+        "-o", str(task.dst.parent),
+        str(task.src),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"  [ERROR] texconv failed (exit {result.returncode})")
+        if result.stdout:
+            print(f"  stdout: {result.stdout.strip()}")
+        if result.stderr:
+            print(f"  stderr: {result.stderr.strip()}")
+        return False
+    return True
+
+
+# ============================================================
+# COPY (.wav / .ttf 等のバイナリそのまま)
+# ============================================================
+def copy_file(task: FileTask) -> bool:
+    import shutil
+    task.dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(task.src, task.dst)
+    return True
+
+
+# ============================================================
+# 実行ディスパッチ
+# ============================================================
+def perform(task: FileTask, dry_run: bool) -> bool:
+    """タスクを実行する。成功なら True。"""
+    if dry_run:
+        return True
+
+    if task.action == Action.CONVERT_PNG_TO_DDS:
+        return convert_png_to_dds(task)
+    if task.action == Action.CONVERT_OBJ_TO_MESH:
+        return convert_obj_to_mesh(task)
+    if task.action == Action.CONVERT_GLTF_TO_MESH:
+        return convert_gltf_to_mesh(task)
+    if task.action == Action.COPY:
+        return copy_file(task)
+
+    # TODO: 残りの Action は後続 Step で実装
+    print(f"  [TODO] {task.action.name} はまだ未実装")
+    return False
+
+
+# ============================================================
+# メイン
+# ============================================================
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Assets/ → Resources/ アセットコンバータ")
+    parser.add_argument("--force", action="store_true", help="差分を無視して全再変換")
+    parser.add_argument("--dry-run", action="store_true", help="実際の変換は行わず予定のみ表示")
+    args = parser.parse_args()
+
+    if not ASSETS_DIR.exists():
+        print(
+            f"[ERROR] {ASSETS_DIR} が見つかりません。Project/ ディレクトリで実行してください。",
+            file=sys.stderr,
+        )
+        return 1
+
+    cache = load_cache()
+    stats: dict[Action, int] = {action: 0 for action in Action}
+    rebuilt = 0
+    up_to_date = 0
+    unknown_files: list[Path] = []
+
+    for src in sorted(ASSETS_DIR.rglob("*")):
+        if not src.is_file():
+            continue
+        task = classify(src)
+        stats[task.action] += 1
+
+        if task.action == Action.UNKNOWN:
+            unknown_files.append(src)
+            continue
+        if task.action == Action.SKIP:
+            continue
+
+        if not needs_rebuild(task, cache, args.force):
+            up_to_date += 1
+            continue
+
+        rel_src = task.src.relative_to(ASSETS_DIR).as_posix()
+        rel_dst = task.dst.relative_to(RESOURCES_DIR).as_posix() if task.dst else "-"
+        print(f"[{task.action.name}] {rel_src} -> {rel_dst}")
+
+        if perform(task, args.dry_run) and not args.dry_run:
+            cache[task.src.as_posix()] = task.src.stat().st_mtime
+            rebuilt += 1
+
+    if not args.dry_run:
+        save_cache(cache)
+
+    # ----- 統計 -----
+    print()
+    print("=" * 50)
+    print(f"Walked:     {sum(stats.values())} files")
+    for action, count in stats.items():
+        if count > 0:
+            print(f"  {action.name:30s} {count}")
+    print(f"Rebuilt:    {rebuilt}")
+    print(f"Up-to-date: {up_to_date}")
+    if unknown_files:
+        print()
+        print("[WARN] 未対応の拡張子:")
+        for p in unknown_files[:10]:
+            print(f"  {p}")
+        if len(unknown_files) > 10:
+            print(f"  ... 他 {len(unknown_files) - 10} 件")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

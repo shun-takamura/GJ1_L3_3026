@@ -1,0 +1,176 @@
+#pragma once
+#include "Object3DManager.h"
+#include "VertexData.h"
+#include <fstream>
+#include <sstream>
+#include "Material.h"
+#include <cassert>
+#include "DirectXCore.h"
+#include "MathUtility.h"
+#include "TransformationMatrix.h"
+#include "DirectionalLight.h"
+#include"PointLight.h"
+#include "TextureManager.h"
+#include "Transform.h"
+#include "ModelCore.h"
+#include "ModelInstance.h"
+#include "ModelManager.h"
+#include "Camera.h"
+#include "CameraForGPU.h"
+
+// ImGui対応
+#include "IImGuiEditable.h"
+
+class Object3DManager;
+
+class Object3DInstance : public IImGuiEditable {
+
+    //==============================
+    // メンバ変数
+    //==============================
+    std::string name_;  // オブジェクト名（ImGui用に追加）
+
+    Object3DManager* object3DManager_ = nullptr;
+    ModelInstance* modelInstance_ = nullptr;
+    Camera* camera_ = nullptr;
+
+    // バッファリソース
+    Microsoft::WRL::ComPtr<ID3D12Resource> transformationMatrixResource_;
+    Microsoft::WRL::ComPtr<ID3D12Resource> cameraResource_;
+
+    // バッファ内データへのCPU側ポインタ
+    TransformationMatrix* transformationMatrixData_ = nullptr;
+    CameraForGPU* cameraData_ = nullptr;
+
+    // バッファリソースの使い道を補足するバッファビュー
+    D3D12_VERTEX_BUFFER_VIEW vertexBufferView_{};
+
+    Transform transform_;
+    Transform cameraTransform_;
+
+    // ボーン追従などで完成済みワールド行列を外部から渡すための上書き。
+    // hasWorldOverride_ が true の間は transform_ ではなく worldOverride_ を使う。
+    bool hasWorldOverride_ = false;
+    Matrix4x4 worldOverride_{};
+
+    // テクスチャファイルパス（テクスチャ変更機能用）
+    std::string textureFilePath_;
+    std::string modelFileName_;
+    std::string directoryPath_;  // ロード時の dirPath（シーンJSON保存・再ロード用）
+
+    //==============================
+    // メンバ関数
+    //==============================
+
+    // 座標変換行列リソース作成
+    void CreateTransformationMatrixResource(DirectXCore* dxCore);
+
+    void CreateCameraResource(DirectXCore* dxCore);
+
+public:
+    //==============================
+    // コンストラクタ・デストラクタ
+    //==============================
+    Object3DInstance() = default;
+    ~Object3DInstance() override = default;
+
+    //==============================
+    // IImGuiEditable実装
+    //==============================
+    std::string GetName() const override { return name_; }
+    std::string GetTypeName() const override { return "Object3D"; }
+    void OnImGuiInspector() override;
+    Vector3* GetEditableTranslate() override { return &transform_.translate; }
+    const Vector3* GetEditableRotate() const override { return &transform_.rotate; }
+
+    // ID Pass 用：idMaskRT に objectId_ を書き込む
+    void DrawIdPass(class DirectXCore* dxCore);
+
+    // シャドウパス用：transform を b0 にバインドして深度を書き込む
+    // （PSO/RootSig/カスケード行列はパス側で設定済みの前提）
+    void DrawShadowPass(class DirectXCore* dxCore);
+
+    //==============================
+    // セッター
+    //==============================
+    void SetName(const std::string& name) override { name_ = name; }
+    void SetModel(ModelInstance* modelInstance) { modelInstance_ = modelInstance; }
+    void SetModel(const std::string& filePath);
+    void SetCamera(Camera* camera) { camera_ = camera; }
+    void SetScale(const Vector3& scale) { transform_.scale = scale; }
+    void SetRotate(const Vector3& rotate) { transform_.rotate = rotate; }
+    void SetTranslate(const Vector3& translate) { transform_.translate = translate; }
+    void SetTexture(const std::string& filePath);
+
+    // ワールド行列を直接上書きする（ボーン追従用）。Update がこれを優先採用する。
+    void SetWorldMatrixOverride(const Matrix4x4& m) { worldOverride_ = m; hasWorldOverride_ = true; }
+    void ClearWorldMatrixOverride() { hasWorldOverride_ = false; }
+
+    //==============================
+    // Material関連セッター（環境マッピング関連）
+    //==============================
+
+    /// <summary>
+    /// 環境マップの使用ON/OFF
+    /// true: 環境マップあり（Object3d.PS.hlsl を使用）
+    /// false: 環境マップなし（Object3dNoEnv.PS.hlsl を使用、計算自体をスキップ）
+    /// </summary>
+    void SetUseEnvironmentMap(bool use);
+
+    /// <summary>
+    /// 環境マップの反映度合い (0.0〜1.0)
+    /// 1.0で「磨き上げられた金属」レベルの映り込みすぎ
+    /// 0.3程度が現実的な金属光沢
+    /// 0.0で映り込みなし（ただし計算自体は行われる、完全OFFは SetUseEnvironmentMap(false)）
+    /// </summary>
+    void SetEnvironmentCoefficient(float coef);
+
+    /// <summary>
+    /// マテリアルカラー（GPU側 Material::color）を直接書き換える。
+    /// SetModel 前は no-op。alpha < 1.0f で半透明になる。
+    /// </summary>
+    void SetMaterialColor(const Vector4& color);
+
+    /// <summary>
+    /// 現在のマテリアルカラーを取得（SetModel 前は白を返す）。
+    /// </summary>
+    Vector4 GetMaterialColor() const;
+
+    //==============================
+    // PBR マテリアルセッター
+    //==============================
+    void SetMetallic(float metallic);              // 金属度 0..1
+    void SetRoughness(float roughness);            // 粗さ 0..1
+    void SetShadingModel(int shadingModel);        // 0=BlinnPhong, 1=PBR（kShaderPBR を使用）
+
+    //==============================
+    // TODO: 将来的に拡張予定のMaterialセッター
+    //==============================
+    // void SetColor(const Vector4& color);
+    // void SetShininess(float shininess);
+    // void SetEnableLighting(bool enable);
+    //
+    // enum class MaterialPreset { Default, Metal, Plastic, Matte };
+    // void SetMaterialPreset(MaterialPreset preset);
+
+    //==============================
+    // ゲッター
+    //==============================
+    const Vector3& GetScale() const { return transform_.scale; }
+    const Vector3& GetRotate() const { return transform_.rotate; }
+    const Vector3& GetTranslate() const { return transform_.translate; }
+    const std::string& GetTextureFilePath() const { return textureFilePath_; }
+    const std::string& GetModelFileName() const { return modelFileName_; }
+    const std::string& GetDirectoryPath() const { return directoryPath_; }
+
+    //==============================
+    // 初期化・更新・描画
+    //==============================
+    void Initialize(Object3DManager* object3DManager, DirectXCore* dxCore,
+        const std::string& directorPath, const std::string& filename,
+        const std::string& name = "");
+
+    void Update();
+
+    void Draw(DirectXCore* dxCore);
+};

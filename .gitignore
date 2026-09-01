@@ -1,0 +1,53 @@
+# ===================================================================
+# GJ1_L3_3026
+#
+# 方針: エンジンのバイナリとリソースは「コミットする」。
+#       クローンしただけでビルドできる状態を保つため。
+#
+#   Project/lib/                  エンジンの .lib（再生成できない）
+#   Project/Resources/            .cso / .dds / フォント（元データが無いので再生成できない）
+#   Project/externals/**/lib,bin  外部ライブラリの実体
+#
+#       逆に、ビルドで再生成されるものだけを除外する。
+# ===================================================================
+
+# ビルド生成物（exe / obj / pack すべてここに出る）
+Generated/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.aps
+*.opendb
+*.VC.db
+*.VC.opendb
+ipch/
+*.ipch
+*.pch
+*.idb
+*.ilk
+*.tlog
+*.log
+*.lastbuildstate
+*.obj
+*.pdb.tmp
+
+# 実行時に作られるログとクラッシュダンプ
+Project/Logs/
+*.dmp
+
+# setup_mergiraf.bat が zip から展開する実行ファイル（75MB）。zip だけをコミットする
+Project/tools/mergiraf/mergiraf.exe
+
+# アセット変換の差分キャッシュ（各自の環境で作られる）
+Project/tools/Python/sync_cache.json
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
