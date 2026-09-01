@@ -4,10 +4,11 @@ setlocal
 cd /d "%~dp0"
 
 echo ==========================================
-echo   mergiraf セットアップ
+echo   リポジトリ セットアップ
 echo ==========================================
 echo.
-echo このリポジトリで .cpp / .h の自動マージを有効にします。
+echo このリポジトリで .cpp / .h の自動マージを有効にし、
+echo ImGui のウィンドウ配置をローカル管理に切り替えます。
 echo クローン後に一度だけ実行してください。
 echo.
 
@@ -23,9 +24,9 @@ if errorlevel 1 (
 
 REM --- 2) mergiraf.exe を展開（初回のみ / 展開後 約75MB） ---
 if exist "mergiraf.exe" (
-    echo [1/2] mergiraf.exe は展開済みです。
+    echo [1/3] mergiraf.exe は展開済みです。
 ) else (
-    echo [1/2] mergiraf.exe を展開しています... 少し時間がかかります
+    echo [1/3] mergiraf.exe を展開しています... 少し時間がかかります
     "%SystemRoot%\System32\tar.exe" -xf "mergiraf_x86_64-pc-windows-gnu.zip"
 )
 
@@ -55,7 +56,20 @@ if errorlevel 1 (
 git config --local merge.mergiraf.driver "'%MG%' merge --git %%O %%A %%B -s %%S -x %%X -y %%Y -p %%P -l %%L"
 git config --local merge.conflictStyle diff3
 
-echo [2/2] merge driver を登録しました。
+echo [2/3] merge driver を登録しました。
+echo.
+
+REM --- 4) ImGui のウィンドウ配置をローカル変更扱いにする ---
+REM     imgui.ini はリポジトリに「整った初期配置」として入れてある。
+REM     ただし各自が配置を変えるたびに差分が出ると pull のたびに衝突するので、
+REM     skip-worktree で「ローカルの変更は git に見せない」状態にする。
+echo [3/3] ImGui のウィンドウ配置をローカル管理にしています...
+git update-index --skip-worktree "../../imgui.ini" 2>nul
+if errorlevel 1 (
+    echo       [情報] imgui.ini が見つからないためスキップしました。
+) else (
+    echo       imgui.ini は自由に動かして構いません。git には反映されません。
+)
 echo.
 echo ==========================================
 echo   セットアップ完了
