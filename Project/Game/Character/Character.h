@@ -2,13 +2,16 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "IImGuiEditable.h"
 #include "Vector3.h"
 #include "Primitive/PrimitiveInstance.h"
+#include "Weapon/ProjectileSpawnRequest.h"
 
 class Camera;
 class IStageQuery;
+class Weapon;
 
 /// <summary>
 /// 対戦キャラクターの共通実装(プレイヤー・AI 兼用)。
@@ -55,7 +58,7 @@ public:
 		// 「命中位置と防御側の位置関係」から向きを逆算すると、密着距離(お互いのカプセルが
 		// めり込むくらい近い)では攻撃ヒットボックスの中心が防御側を追い越してしまい、
 		// 符号が反転する(＝攻撃した側に向かって吹っ飛ぶ)バグになる。それを避けるため、
-		// 攻撃した瞬間の facingX_ をそのままコピーして持ち運ぶ。
+		// 攻撃した瞬間の照準方向(aimDirX_)をそのままコピーして持ち運ぶ。
 		float knockbackDirX = 1.0f;
 	};
 
@@ -77,8 +80,14 @@ public:
 	/// <param name="jumpTriggered">ジャンプ入力が押された「瞬間」か(接地中のみ実際にジャンプする)。</param>
 	/// <param name="crouchHeld">しゃがみ入力が押されている「間」ずっと true。接地中のみ有効で、
 	/// しゃがんでいる間は移動・ジャンプができなくなる(見た目も低くなる)。</param>
-	/// <param name="attackTriggered">攻撃入力が押された「瞬間」か(クールダウン中は無視される)。</param>
-	void Update(float dt, float moveX, bool jumpTriggered, bool crouchHeld, bool attackTriggered);
+	/// <param name="aimDirX">照準方向のX成分(マウスカーソル/右スティックから GameScene が計算する)。
+	/// 移動方向とは独立していて、素手パンチ・銃の弾道・投げ捨てのすべてがこの方向を向く。</param>
+	/// <param name="aimDirY">照準方向のY成分。</param>
+	/// <param name="attackTriggered">攻撃入力が押された「瞬間」か(単発武器・素手のクールダウン判定用)。</param>
+	/// <param name="attackHeld">攻撃入力が押されている「間」か(アサルトライフルのような連射武器用)。</param>
+	/// <param name="throwTriggered">武器投げ捨て入力が押された「瞬間」か(素手のときは何も起きない)。</param>
+	void Update(float dt, float moveX, bool jumpTriggered, bool crouchHeld,
+		float aimDirX, float aimDirY, bool attackTriggered, bool attackHeld, bool throwTriggered);
 
 	/// <summary>見た目(Box)を描画する。当たり判定のデバッグ描画は CollisionSystem 側が別途行う。</summary>
 	void Draw();
@@ -98,6 +107,10 @@ public:
 
 	Vector3 GetPosition() const { return position_; }
 	void SetPosition(const Vector3& pos) { position_ = pos; }
+
+	/// <summary>現在の照準方向(正規化済み)。デバッグ表示(照準レイの描画)用に公開している。</summary>
+	float GetAimDirX() const { return aimDirX_; }
+	float GetAimDirY() const { return aimDirY_; }
 
 	/// <summary>
 	/// 地形問い合わせ先を差し込む。nullptr のままなら「常に y=kRestHeight に平床がある」
@@ -131,6 +144,39 @@ public:
 	bool ReceiveHit(const AttackHitbox& hitbox);
 
 	//====================
+	// 武器(フェーズ2)
+	// Character は「今どの Weapon を1つ持っているか」だけを知っていて、反動・弾道・
+	// 連射方式など武器ごとの違いは Weapon 側の責務(Weapon.h の設計コメントと対)。
+	//====================
+
+	/// <summary>今の武器を捨てて weapon を装備する。呼び出し側(GameScene)が
+	/// CanPickUpWeapon() で無武装であることを確認してから呼ぶ想定。</summary>
+	void EquipWeapon(std::unique_ptr<Weapon> weapon);
+
+	/// <summary>今、素手(=ステージの武器を拾える状態)かどうか。</summary>
+	bool CanPickUpWeapon() const;
+
+	/// <summary>HUD表示用の、今装備している武器の名前。</summary>
+	std::string GetEquippedWeaponName() const;
+
+	/// <summary>HUD表示用の、今装備している武器の残弾数(概念が無ければ Weapon::kInfiniteAmmo)。</summary>
+	int GetEquippedAmmo() const;
+
+	/// <summary>
+	/// このキャラが直前の Update() で銃を発射していれば true を返し、生成された弾の
+	/// リクエスト(ショットガンなら複数)を outSpawns に詰める。ConsumePendingAttack と対になる、
+	/// 飛び道具用の受け渡し窓口。GameScene が毎フレーム回収し、実際の Projectile を生成する。
+	/// </summary>
+	bool ConsumePendingProjectileSpawns(std::vector<ProjectileSpawnRequest>& outSpawns);
+
+	/// <summary>
+	/// このキャラが直前の Update() で武器を投げ捨てていれば true を返し、投げた物の
+	/// 初期条件(位置・初速・ダメージ等)を outSpawn に詰める。呼ばれた時点で装備は
+	/// 既に素手に戻っている。素手のときに throwTriggered が来ても何も起きない。
+	/// </summary>
+	bool ConsumePendingThrow(ProjectileSpawnRequest& outSpawn);
+
+	//====================
 	// IImGuiEditable(エンジン側の Hierarchy / Inspector / CollisionSystem への登録に使われる)
 	//====================
 	std::string GetName() const override { return name_; }
@@ -152,14 +198,21 @@ private:
 	static constexpr float kRestHeight = 0.9f;            // 接地時の position_.y (ボックスの中心の高さ。床が y=0 の前提)
 	static constexpr float kCapsuleRadius = 0.45f;        // 当たり判定カプセルの半径
 	static constexpr float kCapsuleHeight = 0.9f;         // 当たり判定カプセルの円柱部分の高さ(両端の半球は含まない)
-	static constexpr float kAttackForwardOffset = 1.0f;   // 攻撃判定球を、自分の位置から前方(facingX_ 方向)へどれだけ離すか
-	static constexpr float kAttackRadius = 0.8f;          // 攻撃判定球の半径
-	static constexpr float kAttackDamage = 15.0f;         // 素手攻撃1発分のダメージ
-	static constexpr float kAttackKnockbackPower = 10.0f; // 素手攻撃命中時のノックバック初速
-	static constexpr float kAttackCooldown = 0.5f;        // 攻撃後、次の攻撃が出せるようになるまでの秒数
 	static constexpr float kKnockbackDamping = 6.0f;      // ノックバック速度の減衰係数。大きいほど速く止まる
 	static constexpr float kCrouchHeightScale = 0.5f;     // しゃがみ時、見た目・当たり判定の高さを何倍にするか
 	static constexpr float kCrouchMoveScale = 0.5f;       // しゃがみ歩きの速度倍率(通常移動に対して)
+	static constexpr float kDamageFlashDuration = 0.15f;  // ダメージを受けたときに見た目を赤くする秒数
+
+	// ---- 投げ捨てパラメータ ----
+	// 「今何を持っているか」に関わらず固定値(残弾ゼロの銃を投げても同じ威力)。
+	// 弾道は銃弾と同じ放物線(ArcingProjectile)を使う。
+	static constexpr float kThrowSpeed = 12.0f;          // 投げる初速の大きさ
+	static constexpr float kThrowDamage = 8.0f;          // 命中時のダメージ
+	static constexpr float kThrowKnockbackPower = 9.0f;  // 命中時のノックバック
+	static constexpr float kThrowRadius = 0.3f;          // 当たり判定球の半径(武器を模した大きめの弾扱い)
+	static constexpr float kThrowGravityScale = 1.0f;    // 重力の掛かり具合
+	static constexpr float kThrowLifeTime = 3.0f;        // 何にも当たらなかった場合に消えるまでの秒数
+	static constexpr float kThrowForwardOffset = 1.0f;   // 投げる位置を自分の中心からどれだけ照準方向へ離すか
 
 	/// <summary>CollisionSystem に自分用の Capsule コライダーを設定する(Initialize から呼ぶ)。</summary>
 	void SetupCollider();
@@ -180,7 +233,8 @@ private:
 
 	// ---- トランスフォーム・物理状態 ----
 	Vector3 position_{ 0.0f, kRestHeight, 0.0f }; // ワールド座標(ボックスの中心)。当たり判定もここを基準にする
-	float facingX_ = 1.0f;                        // 現在の向き。+1=右向き, -1=左向き。攻撃の前方判定に使う
+	float aimDirX_ = 1.0f;                        // 照準方向(正規化済み)。移動方向とは独立
+	float aimDirY_ = 0.0f;                        // マウス/右スティックが未入力のフレームは直前の値を維持する
 	float knockbackVelocityX_ = 0.0f;             // ノックバックによる水平速度。時間経過で0へ減衰していく
 	float verticalVelocity_ = 0.0f;               // 重力・ジャンプによる垂直速度
 	bool grounded_ = true;                        // 地面に接地しているか(falseの間だけジャンプ不可)
@@ -188,7 +242,13 @@ private:
 
 	// ---- 戦闘状態 ----
 	float hp_ = kMaxHP;
-	float attackCooldownTimer_ = 0.0f;   // 0以下になるまで次の攻撃を出せない
-	bool hasPendingAttack_ = false;      // 今フレーム攻撃が成立し、ConsumePendingAttack待ちか
+	bool hasPendingAttack_ = false;      // 今フレーム近接攻撃が成立し、ConsumePendingAttack待ちか
 	AttackHitbox pendingAttack_{};       // hasPendingAttack_ が true のときだけ有効な内容
+	float damageFlashTimer_ = 0.0f;      // 0より大きい間、見た目を赤く表示する(ApplyDamage で再セット)
+
+	// ---- 武器 ----
+	std::unique_ptr<Weapon> equippedWeapon_;                    // 常に何かしらの Weapon を指している(素手も Weapon の一種)
+	std::vector<ProjectileSpawnRequest> pendingProjectileSpawns_; // 今フレーム発射が成立した弾のリクエスト(ショットガンは複数)
+	bool hasPendingThrow_ = false;        // 今フレーム投げ捨てが成立し、ConsumePendingThrow待ちか
+	ProjectileSpawnRequest pendingThrow_{}; // hasPendingThrow_ が true のときだけ有効な内容
 };

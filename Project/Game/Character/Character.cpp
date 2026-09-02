@@ -1,9 +1,15 @@
 #include "Character.h"
 
+#include <cmath>
+#include <utility>
+
 #include "Camera.h"
 #include "Common/IStageQuery.h"
 #include "Physics/CollisionGeometry.h"
 #include "Physics/CollisionSystem.h"
+#include "Vector4.h"
+#include "Weapon/Weapon.h"
+#include "Weapon/UnarmedWeapon.h"
 
 #ifdef USE_IMGUI
 #include "imgui.h"
@@ -38,6 +44,10 @@ void Character::Initialize(Camera* camera, const std::string& name, const Vector
 	visual_->SetTranslate(position_);
 
 	SetupCollider();
+
+	// 初期装備は常に素手(UnarmedWeapon)。equippedWeapon_ が nullptr になる瞬間を作らないことで、
+	// Update() 側は「武器を持っていない」という特別分岐を考えずに済む(Weapon.h の設計コメント参照)。
+	equippedWeapon_ = std::make_unique<UnarmedWeapon>();
 }
 
 void Character::Finalize() {
@@ -80,7 +90,8 @@ void Character::ResolveBodyBlock(IImGuiEditable* other) {
 	position_.x += awayX * kBodyPushPerFrame;
 }
 
-void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHeld, bool attackTriggered) {
+void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHeld,
+	float aimDirX, float aimDirY, bool attackTriggered, bool attackHeld, bool throwTriggered) {
 	// このフレームの移動前の位置。地形当たり判定は「開始位置 → 積分後の位置」で一度だけ解決する。
 	const Vector3 startPos = position_;
 
@@ -104,7 +115,6 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 		if (moveX > 1.0f) moveX = 1.0f;
 		if (moveX < -1.0f) moveX = -1.0f;
 		if (moveX > 0.0001f || moveX < -0.0001f) {
-			facingX_ = (moveX > 0.0f) ? 1.0f : -1.0f; // 攻撃の前方判定はこの向きを使う
 			const float speed = kMoveSpeed * (isCrouching_ ? kCrouchMoveScale : 1.0f);
 			position_.x += moveX * speed * dt;
 		}
@@ -160,26 +170,60 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 		}
 	}
 
-	// ---- 攻撃 ----
-	// ここでやるのはクールダウン管理と「攻撃ヒットボックスの生成」だけ。
-	// 実際に「当たったかどうか」の判定は行わない(ReceiveHit 側の責務)。
-	// 理由: このキャラは「相手が誰か」を知らないので、ここで判定のしようがない。
-	if (attackCooldownTimer_ > 0.0f) {
-		attackCooldownTimer_ -= dt;
+	// ---- 照準方向の更新 ----
+	// GameScene 側でほぼ正規化済みのはずだが、念のためここでも正規化する。
+	// マウスがちょうどキャラの真上にあるなど、方向が定まらない(ほぼ0ベクトルの)フレームは
+	// 直前の照準方向を維持する(急にパンチの向きが原点にすっ飛ぶのを防ぐ)。
+	const float aimLenSq = aimDirX * aimDirX + aimDirY * aimDirY;
+	if (aimLenSq > 0.0001f) {
+		const float invLen = 1.0f / std::sqrt(aimLenSq);
+		aimDirX_ = aimDirX * invLen;
+		aimDirY_ = aimDirY * invLen;
 	}
-	if (attackTriggered && attackCooldownTimer_ <= 0.0f) {
-		attackCooldownTimer_ = kAttackCooldown;
+
+	// ---- 攻撃(素手 or 装備中の武器) ----
+	// 実際の攻撃ロジック(クールダウン・残弾・弾道)は装備中の Weapon に委譲する。
+	// Character は「今 hitbox/弾が生成されたかどうか」を受け取ってペンディングバッファに
+	// 積むだけで、武器ごとの違いは一切知らない(Weapon.h の設計コメント参照)。
+	AttackHitbox meleeHitbox;
+	if (equippedWeapon_->TryMeleeAttack(dt, attackTriggered, position_, aimDirX_, aimDirY_, meleeHitbox)) {
 		hasPendingAttack_ = true;
-		// 攻撃判定球は、自分の位置から向いている方向(facingX_)へ kAttackForwardOffset だけ
-		// 離した位置に置く(＝正面を殴るイメージ)。Y/Z は自分と同じ高さ・同じ奥行き。
-		pendingAttack_.center = { position_.x + facingX_ * kAttackForwardOffset, position_.y, position_.z };
-		pendingAttack_.radius = kAttackRadius;
-		pendingAttack_.damage = kAttackDamage;
-		pendingAttack_.knockbackPower = kAttackKnockbackPower;
-		// ノックバックの向きは「今の自分の向き」をそのまま持たせる。
-		// center(命中位置)から逆算すると、密着距離ではヒットボックス中心が相手を追い越してしまい
-		// 符号が反転する(＝殴った側に向かって吹っ飛ぶ)バグになるため、あえて逆算しない。
-		pendingAttack_.knockbackDirX = facingX_;
+		pendingAttack_ = meleeHitbox;
+	}
+	std::vector<ProjectileSpawnRequest> spawns;
+	if (equippedWeapon_->TryRangedAttack(dt, attackTriggered, attackHeld, position_, aimDirX_, aimDirY_, spawns)) {
+		for (const ProjectileSpawnRequest& spawn : spawns) {
+			pendingProjectileSpawns_.push_back(spawn);
+		}
+		// 反動: 発射方向と逆向きに軽くノックバックする(武器ごとの大きさは Weapon 側が持つ)。
+		ApplyKnockback(-aimDirX_, equippedWeapon_->GetRecoilPower());
+	}
+
+	// ---- 投げ捨て ----
+	// 素手(CanBeThrown() == false)のときは何も起きない。投げた瞬間に装備は素手へ戻る。
+	// 投げた武器の中身(残弾等)は問わない ── ダメージ・ノックバックは kThrow* の固定値を使う
+	// (「弾切れの銃でも投げれば同じ威力」という仕様。Weapon.h 側の反動とは無関係の別パラメータ)。
+	if (throwTriggered && equippedWeapon_->CanBeThrown()) {
+		// 投げる位置は自分の中心から照準方向へ少し離す(自分自身に当たらないようにするため)。
+		pendingThrow_.origin = { position_.x + aimDirX_ * kThrowForwardOffset, position_.y + aimDirY_ * kThrowForwardOffset, position_.z };
+		// 初速は照準方向 × 投擲速度。この後は ArcingProjectile 側が重力を積分して放物線を描く
+		// (銃弾と全く同じ物理。Weapon/ArcingProjectile.h 参照)。
+		pendingThrow_.velocityX = aimDirX_ * kThrowSpeed;
+		pendingThrow_.velocityY = aimDirY_ * kThrowSpeed;
+		pendingThrow_.gravityScale = kThrowGravityScale;
+		pendingThrow_.radius = kThrowRadius;
+		pendingThrow_.lifeTime = kThrowLifeTime;         // 何にも当たらなければこの秒数で消える
+		pendingThrow_.damage = kThrowDamage;             // 命中時のダメージ(投げ武器固定値)
+		pendingThrow_.knockbackPower = kThrowKnockbackPower;
+		hasPendingThrow_ = true; // GameScene が ConsumePendingThrow() で回収し、実体(ArcingProjectile)を生成する
+		// 今の武器は GameScene 側で使い捨ての飛翔体になる(拾い直せる物として地面に残ることはない)ので、
+		// ここで所有権を手放し、素手に持ち替える。
+		equippedWeapon_ = std::make_unique<UnarmedWeapon>();
+	}
+
+	// ---- ダメージフラッシュ(ApplyDamage で damageFlashTimer_ がセットされている間、赤くする) ----
+	if (damageFlashTimer_ > 0.0f) {
+		damageFlashTimer_ -= dt;
 	}
 
 	// ---- 見た目への反映 ----
@@ -193,6 +237,11 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 		Vector3 visualPos = position_;
 		visualPos.y = position_.y - kRestHeight * (1.0f - heightScale);
 		visual_->SetTranslate(visualPos);
+		// ダメージを受けた直後だけ赤く光らせる(それ以外は素の白)。
+		// 「当たったのに何も起きた感じがしない」を防ぐための最小限の反応。
+		visual_->GetMesh().SetColor(damageFlashTimer_ > 0.0f
+			? Vector4{ 1.0f, 0.2f, 0.2f, 1.0f }
+			: Vector4{ 1.0f, 1.0f, 1.0f, 1.0f });
 		visual_->Update();
 	}
 }
@@ -235,10 +284,49 @@ bool Character::ReceiveHit(const AttackHitbox& hitbox) {
 	return true;
 }
 
+void Character::EquipWeapon(std::unique_ptr<Weapon> weapon) {
+	equippedWeapon_ = std::move(weapon);
+}
+
+bool Character::CanPickUpWeapon() const {
+	// 「投げ捨てられない武器を今持っている」＝素手、という判定にすることで、
+	// Unarmed かどうかを直接見るための特別なフラグを別に持たずに済む。
+	return !equippedWeapon_->CanBeThrown();
+}
+
+std::string Character::GetEquippedWeaponName() const {
+	return equippedWeapon_->GetName();
+}
+
+int Character::GetEquippedAmmo() const {
+	return equippedWeapon_->GetRemainingAmmo();
+}
+
+bool Character::ConsumePendingProjectileSpawns(std::vector<ProjectileSpawnRequest>& outSpawns) {
+	if (pendingProjectileSpawns_.empty()) {
+		return false;
+	}
+	outSpawns = std::move(pendingProjectileSpawns_);
+	pendingProjectileSpawns_.clear(); // move後の状態は未規定なので、明示的に空にしておく
+	return true;
+}
+
+bool Character::ConsumePendingThrow(ProjectileSpawnRequest& outSpawn) {
+	if (!hasPendingThrow_) {
+		return false;
+	}
+	outSpawn = pendingThrow_;
+	hasPendingThrow_ = false; // 1回取り出したら消費済み。次に投げるまで false のまま
+	return true;
+}
+
 void Character::ApplyDamage(float amount) {
 	hp_ -= amount;
 	if (hp_ < 0.0f) {
 		hp_ = 0.0f; // HPは負にしない(0以下=死亡は IsDead() が見る)
+	}
+	if (amount > 0.0f) {
+		damageFlashTimer_ = kDamageFlashDuration; // Update() 側でこの秒数だけ赤く表示する
 	}
 }
 
@@ -258,11 +346,14 @@ void Character::ResetForNewRound(const Vector3& spawnPos) {
 	knockbackVelocityX_ = 0.0f;
 	verticalVelocity_ = 0.0f;
 	grounded_ = true;
-	attackCooldownTimer_ = 0.0f;
 	hasPendingAttack_ = false;
+	pendingProjectileSpawns_.clear();
+	hasPendingThrow_ = false;
+	damageFlashTimer_ = 0.0f;
 
 	if (visual_) {
 		visual_->SetTranslate(position_);
+		visual_->GetMesh().SetColor({ 1.0f, 1.0f, 1.0f, 1.0f }); // 赤フラッシュが残ったまま次ラウンドへ持ち越さない
 	}
 }
 
@@ -272,6 +363,12 @@ void Character::OnImGuiInspector() {
 	// HP・接地状態の確認と、位置の直接編集、即死ボタン(HP0にしてリセット動作を試す用)を提供する。
 	ImGui::Text("HP: %.0f / %.0f", hp_, kMaxHP);
 	ImGui::Text("Grounded: %s", grounded_ ? "true" : "false");
+	const int ammo = GetEquippedAmmo();
+	if (ammo == Weapon::kInfiniteAmmo) {
+		ImGui::Text("Weapon: %s", GetEquippedWeaponName().c_str());
+	} else {
+		ImGui::Text("Weapon: %s (Ammo: %d)", GetEquippedWeaponName().c_str(), ammo);
+	}
 	ImGui::DragFloat3("Position", &position_.x, 0.1f);
 	if (ImGui::Button("Kill")) {
 		ApplyDamage(hp_);
