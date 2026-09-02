@@ -69,7 +69,7 @@
   <!-- 自分のヘッダを引けるようにする（エンジン側は Common.props が面倒を見る） -->
   <ItemDefinitionGroup>
     <ClCompile>
-      <AdditionalIncludeDirectories>$(SolutionDir)Game;$(SolutionDir)Game\Scene;$(SolutionDir)Game\Scene\Transition;$(SolutionDir)Game\Character;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)Game;$(SolutionDir)Game\Scene;$(SolutionDir)Game\Scene\Transition;$(SolutionDir)Game\Character;$(SolutionDir)Game\Common;$(SolutionDir)Game\Stage;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
   </ItemDefinitionGroup>
   <PropertyGroup>
@@ -124,6 +124,7 @@
     <ClCompile Include="Scene\Transition\FadeTransition.cpp" />
     <ClCompile Include="Scene\Transition\TransitionManager.cpp" />
     <ClCompile Include="Character\Character.cpp" />
+    <ClCompile Include="Stage\StageGrid.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="GameApp.h" />
@@ -135,6 +136,8 @@
     <ClInclude Include="Scene\Transition\FadeTransition.h" />
     <ClInclude Include="Scene\Transition\TransitionManager.h" />
     <ClInclude Include="Character\Character.h" />
+    <ClInclude Include="Common\IStageQuery.h" />
+    <ClInclude Include="Stage\StageGrid.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <!--

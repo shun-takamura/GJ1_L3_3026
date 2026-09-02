@@ -7,6 +7,7 @@
 #include "Camera.h"
 #include "Primitive/PrimitiveInstance.h"
 #include "Character/Character.h"
+#include "Stage/StageGrid.h"
 
 /// <summary>
 /// ゲーム本編の雛形(フェーズ1: 触れる最小プロトタイプ)。
@@ -40,9 +41,9 @@ public:
 	Camera* GetCamera() override { return camera_.get(); }
 
 private:
-	// アリーナ境界(床のスケールから決め打ち。フェーズ3でステージ担当が実際の地形に合わせて差し替える想定)。
-	// 横視点なので左右(X)の境界のみ判定する(奥行き Z はキャラが動かない軸なので場外に関係しない)。
-	static constexpr float kArenaHalfExtentX = 10.0f;
+	// CSV マップチップ1枚。読み込み・描画・地形当たり判定・破壊・リセットを持つ。
+	// Day2 で B の本物の StageGrid に差し替える想定。
+	static constexpr const char* kStageCsvPath = "Resources/Stages/Sample_00.csv";
 
 	std::unique_ptr<Camera> camera_;
 
@@ -50,8 +51,12 @@ private:
 	std::unique_ptr<Character> player_;
 	std::unique_ptr<Character> dummy_;
 
-	// 仮の壊れない1枚床。地形破壊(フェーズ3)が入るまではこれで代用する
-	std::unique_ptr<PrimitiveInstance> ground_;
+	// ステージ(CSV から生成)。場外判定・地形当たり判定はここへ委譲する。
+	std::unique_ptr<StageGrid> stage_;
+
+	// CSV から読んだスポーン座標(場外/HP0 リセット時の再配置先にも使う)
+	Vector3 playerSpawn_{};
+	Vector3 enemySpawn_{};
 
 	// 仮の得点(HP0 or 場外で+1)。本物のポイント管理・10本先取判定はフェーズ5
 	int playerPoints_ = 0;

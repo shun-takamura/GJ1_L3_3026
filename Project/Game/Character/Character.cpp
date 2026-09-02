@@ -1,6 +1,7 @@
 #include "Character.h"
 
 #include "Camera.h"
+#include "Common/IStageQuery.h"
 #include "Physics/CollisionGeometry.h"
 #include "Physics/CollisionSystem.h"
 
@@ -80,19 +81,32 @@ void Character::ResolveBodyBlock(IImGuiEditable* other) {
 }
 
 void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHeld, bool attackTriggered) {
-	// しゃがみは接地中のみ成立させる(空中でしゃがみ入力を押しても姿勢は変わらない)。
-	// しゃがみ中は下の各ブロックで移動・ジャンプをブロックする。
-	isCrouching_ = crouchHeld && grounded_;
+	// このフレームの移動前の位置。地形当たり判定は「開始位置 → 積分後の位置」で一度だけ解決する。
+	const Vector3 startPos = position_;
+
+	// ---- しゃがみ判定 ----
+	// 接地中にしゃがみ入力があればしゃがむ。入力を離しても、頭上に立ち上がる空間が
+	// 無ければしゃがみを継続する(低い隙間の下で勝手に立って天井へめり込むのを防ぐ)。
+	bool wantCrouch = crouchHeld && grounded_;
+	if (!wantCrouch && isCrouching_ && stage_) {
+		const Vector3 standHalf{ kCapsuleRadius, kRestHeight, kCapsuleRadius };
+		if (stage_->OverlapsSolid(position_, standHalf)) {
+			wantCrouch = true; // つっかえて立てない
+		}
+	}
+	isCrouching_ = wantCrouch;
 
 	// ---- 左右移動(X軸のみ。横視点なので奥行き方向には動かない) ----
-	if (!isCrouching_) {
+	// しゃがみ中も移動できる(しゃがみ歩き)。ただし速度は kCrouchMoveScale 倍に落ちる。
+	{
 		// アナログスティックは magnitude 込みで渡ってくるので理論上 1.0 を超えないはずだが、
 		// キーボードと合算する呼び出し側の実装次第では超える可能性もあるため念のためクランプする。
 		if (moveX > 1.0f) moveX = 1.0f;
 		if (moveX < -1.0f) moveX = -1.0f;
 		if (moveX > 0.0001f || moveX < -0.0001f) {
 			facingX_ = (moveX > 0.0f) ? 1.0f : -1.0f; // 攻撃の前方判定はこの向きを使う
-			position_.x += moveX * kMoveSpeed * dt;
+			const float speed = kMoveSpeed * (isCrouching_ ? kCrouchMoveScale : 1.0f);
+			position_.x += moveX * speed * dt;
 		}
 	}
 
@@ -111,12 +125,39 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 	}
 	verticalVelocity_ += kGravity * dt; // 重力を毎フレーム加速度として積分
 	position_.y += verticalVelocity_ * dt;
-	if (position_.y <= kRestHeight) {
-		// 床(y=0平面)に着地。本当は地形の高さを見るべきだが、フェーズ1では「常に平らな床がある」
-		// という単純化をしている(場外は GameScene 側が X座標だけで別途判定する)。
-		position_.y = kRestHeight;
-		verticalVelocity_ = 0.0f;
-		grounded_ = true;
+
+	// ---- 地形との当たり判定 ----
+	if (stage_) {
+		// 当たり判定 AABB は見た目の Box と同じ寸法。しゃがみ中は頭が下がるぶん高さを縮め、
+		// 足元(position_.y - kRestHeight)は動かさない。position_ は「立ち姿勢での中心」基準なので、
+		// しゃがみ中は当たり判定の中心を centerYOffset だけ下げて計算し、結果を戻すときに足す。
+		const float heightScale = isCrouching_ ? kCrouchHeightScale : 1.0f;
+		const float centerYOffset = -kRestHeight * (1.0f - heightScale);
+		const Vector3 half{ kCapsuleRadius, kRestHeight * heightScale, kCapsuleRadius };
+		const Vector3 fromC{ startPos.x, startPos.y + centerYOffset, startPos.z };
+		const Vector3 toC{ position_.x, position_.y + centerYOffset, position_.z };
+		const StageMoveResult mv = stage_->MoveAabb(fromC, toC, half);
+		position_ = { mv.position.x, mv.position.y - centerYOffset, mv.position.z };
+		if (mv.grounded) {
+			if (verticalVelocity_ < 0.0f) verticalVelocity_ = 0.0f; // 落下を止める(上向き初速は残さない)
+			grounded_ = true;
+		} else {
+			grounded_ = false;
+		}
+		if (mv.hitCeiling && verticalVelocity_ > 0.0f) {
+			verticalVelocity_ = 0.0f; // 天井に頭をぶつけたら上昇を止める
+		}
+		if (mv.hitWall) {
+			knockbackVelocityX_ = 0.0f; // 壁にめり込むノックバックはそこで止める
+		}
+	} else {
+		// stage 未設定時のフォールバック: 常に y=kRestHeight に平床がある前提。
+		// (Character 単体テストや、ステージ差し替え前の暫定動作用)
+		if (position_.y <= kRestHeight) {
+			position_.y = kRestHeight;
+			verticalVelocity_ = 0.0f;
+			grounded_ = true;
+		}
 	}
 
 	// ---- 攻撃 ----
