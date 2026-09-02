@@ -22,8 +22,10 @@ void GameScene::Initialize() {
 	//===================================
 	// カメラ
 	//===================================
+	// 32x18 セルのステージ全体を横から見る固定視点。値は仮置きで、
+	// デバッグカメラ(Scene 基底機能)で追い込んでから確定する。
 	camera_ = std::make_unique<Camera>();
-	camera_->SetTranslate({ 0.0f, 2.0f, -25.0f });
+	camera_->SetTranslate({ 0.0f, 8.0f, -38.0f });
 	camera_->SetRotate({ 0.0f, 0.0f, 0.0f });
 	camera_->Update();
 
@@ -40,25 +42,34 @@ void GameScene::Initialize() {
 	lm->SetDirectionalLightIntensity(1.0f);
 
 	//===================================
-	// 床(仮の壊れない1枚床)
+	// ステージ(CSV マップチップ)
+	// 10=黒 / 20=白 の 1.0f 立方体で描画。1/2 のマスからスポーン座標を取り出す。
+	// CSV が読めない場合は最下段だけ床にしたフォールバックで起動する。
 	//===================================
-	ground_ = std::make_unique<PrimitiveInstance>();
-	ground_->Initialize(PrimitiveInstance::PrimitiveType::Box, "Ground");
-	ground_->SetCamera(camera_.get());
-	ground_->SetTranslate({ 0.0f, -0.25f, 0.0f });
-	ground_->SetScale({ 20.0f, 0.5f, 20.0f });
+	stage_ = std::make_unique<StageGrid>();
+	stage_->LoadFromCsv(kStageCsvPath);
+	stage_->Initialize(camera_.get());
 
 	//===================================
 	// キャラクター
 	// player_ は操作キャラ、dummy_ は殴る練習台(静止したまま動かない)。
-	// 本物の対戦AIはフェーズ4の別タスクなので、フェーズ1では dummy_ で代用している。
+	// 本物の対戦AIはフェーズ4の別タスクなので、今は dummy_ で代用している。
 	// どちらも Z=0 の同じ奥行きに置く(横視点なので全キャラ同じZ平面上にいる想定)。
+	// スポーン座標と地形当たり判定はステージへ委譲する。
 	//===================================
+	playerSpawn_ = stage_->HasPlayerSpawn()
+		? stage_->GetPlayerSpawnWorld()
+		: Vector3{ -3.0f, 2.0f, 0.0f };
+	const auto& enemySpawns = stage_->GetEnemySpawnsWorld();
+	enemySpawn_ = !enemySpawns.empty() ? enemySpawns.front() : Vector3{ 3.0f, 2.0f, 0.0f };
+
 	player_ = std::make_unique<Character>();
-	player_->Initialize(camera_.get(), "Player", { -3.0f, 0.9f, 0.0f });
+	player_->Initialize(camera_.get(), "Player", playerSpawn_);
+	player_->SetStage(stage_.get());
 
 	dummy_ = std::make_unique<Character>();
-	dummy_->Initialize(camera_.get(), "Dummy", { 3.0f, 0.9f, 0.0f });
+	dummy_->Initialize(camera_.get(), "Dummy", enemySpawn_);
+	dummy_->SetStage(stage_.get());
 
 	playerPoints_ = 0;
 	dummyPoints_ = 0;
@@ -68,7 +79,7 @@ void GameScene::Finalize() {
 	// 依存関係はないが、生成順と逆順に破棄する(可読性のための慣習)。
 	dummy_.reset();
 	player_.reset();
-	ground_.reset();
+	stage_.reset();
 	camera_.reset();
 }
 
@@ -121,6 +132,8 @@ void GameScene::Update() {
 		}
 	}
 
+	stage_->Update();
+
 	player_->Update(dt, moveX, jumpTriggered, crouchHeld, attackTriggered);
 	dummy_->Update(dt, 0.0f, false, false, false); // 的は入力なしで呼ぶだけ(重力等の物理更新は必要なので Update 自体は呼ぶ)
 
@@ -146,8 +159,8 @@ void GameScene::Update() {
 	// 本物の「10ポイント先取・次ステージへ自動遷移」といったラウンド進行はフェーズ5の別タスク。
 	// ここでは「テストを継続できること」を優先して、即座にリセットするだけにしている。
 	//===================================
-	CheckKnockoutAndReset(*player_, *dummy_, dummyPoints_, { -3.0f, 0.9f, 0.0f }, "Player");
-	CheckKnockoutAndReset(*dummy_, *player_, playerPoints_, { 3.0f, 0.9f, 0.0f }, "Dummy");
+	CheckKnockoutAndReset(*player_, *dummy_, dummyPoints_, playerSpawn_, "Player");
+	CheckKnockoutAndReset(*dummy_, *player_, playerPoints_, enemySpawn_, "Dummy");
 
 	//===================================
 	// タイトルへ戻る
@@ -178,12 +191,16 @@ void GameScene::ResolveAttack(Character& attacker, Character& defender, const ch
 	if (defender.ReceiveHit(hitbox)) {
 		Log(std::string(attackerLabel) + " の攻撃が命中\n");
 	}
+	// 同じヒットボックスで「壊れる床」も削る(HP0 で破壊)。相手ヒットとは独立。
+	const int broke = stage_->DamageSphere(hitbox.center, hitbox.radius, hitbox.damage);
+	if (broke > 0) {
+		Log(std::string(attackerLabel) + " が壊れる床を破壊(" + std::to_string(broke) + ")\n");
+	}
 }
 
 bool GameScene::IsOutOfBounds(const Vector3& pos) const {
-	// 横視点なので左右(X)の境界だけを見る。奥行き(Z)は常に固定のため判定不要。
-	// フェーズ3で地形に穴が空くようになったら、Y方向(落下)の判定も必要になる想定。
-	return pos.x < -kArenaHalfExtentX || pos.x > kArenaHalfExtentX;
+	// 場外判定はステージへ委譲する(左右の外、または床の穴から下へ落ちたら場外)。
+	return !stage_ || !stage_->IsPointInsideBounds(pos);
 }
 
 void GameScene::CheckKnockoutAndReset(Character& target, Character& other,
@@ -203,10 +220,15 @@ void GameScene::CheckKnockoutAndReset(Character& target, Character& other,
 	// (other は今の位置のまま、HPと速度だけ初期化してリスタートさせる)。
 	target.ResetForNewRound(targetRespawn);
 	other.ResetForNewRound(other.GetPosition());
+
+	// 壊れた床も元に戻して、次のラウンドを同じ地形で始められるようにする。
+	if (stage_) {
+		stage_->ResetTerrain();
+	}
 }
 
 void GameScene::Draw() {
-	if (ground_) ground_->Draw();
+	if (stage_) stage_->Draw();
 	if (player_) player_->Draw();
 	if (dummy_) dummy_->Draw();
 
@@ -227,7 +249,7 @@ void GameScene::Draw() {
 	//===================================
 	auto* tr = TextRenderer::GetInstance();
 	if (tr && tr->IsInitialized()) {
-		tr->DrawText("A/D : Move   W/A(pad) : Jump   S/Down(pad) : Crouch   J/X : Punch", { 32.0f, 32.0f }, 0.8f);
+		tr->DrawText("A/D : Move   W/A(pad) : Jump   S/Down(pad) : Crouch   Space/X : Punch", { 32.0f, 32.0f }, 0.8f);
 		tr->DrawText("ESC / (B) : Title", { 32.0f, 64.0f }, 0.8f);
 
 		char hpLine[128];

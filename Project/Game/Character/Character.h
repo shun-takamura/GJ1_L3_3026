@@ -8,6 +8,7 @@
 #include "Primitive/PrimitiveInstance.h"
 
 class Camera;
+class IStageQuery;
 
 /// <summary>
 /// 対戦キャラクターの共通実装(プレイヤー・AI 兼用)。
@@ -97,6 +98,12 @@ public:
 
 	Vector3 GetPosition() const { return position_; }
 	void SetPosition(const Vector3& pos) { position_ = pos; }
+
+	/// <summary>
+	/// 地形問い合わせ先を差し込む。nullptr のままなら「常に y=kRestHeight に平床がある」
+	/// という単純化で動く(Character 単体テスト用)。GameScene が生成時に設定する。
+	/// </summary>
+	void SetStage(const IStageQuery* stage) { stage_ = stage; }
 	float GetHP() const { return hp_; }
 	float GetMaxHP() const { return kMaxHP; }
 	bool IsDead() const { return hp_ <= 0.0f; }
@@ -151,7 +158,8 @@ private:
 	static constexpr float kAttackKnockbackPower = 10.0f; // 素手攻撃命中時のノックバック初速
 	static constexpr float kAttackCooldown = 0.5f;        // 攻撃後、次の攻撃が出せるようになるまでの秒数
 	static constexpr float kKnockbackDamping = 6.0f;      // ノックバック速度の減衰係数。大きいほど速く止まる
-	static constexpr float kCrouchHeightScale = 0.5f;     // しゃがみ時、見た目の高さを何倍にするか
+	static constexpr float kCrouchHeightScale = 0.5f;     // しゃがみ時、見た目・当たり判定の高さを何倍にするか
+	static constexpr float kCrouchMoveScale = 0.5f;       // しゃがみ歩きの速度倍率(通常移動に対して)
 
 	/// <summary>CollisionSystem に自分用の Capsule コライダーを設定する(Initialize から呼ぶ)。</summary>
 	void SetupCollider();
@@ -167,6 +175,7 @@ private:
 
 	std::string name_;
 	Camera* camera_ = nullptr;
+	const IStageQuery* stage_ = nullptr; // 地形当たり判定の問い合わせ先(未設定なら平床フォールバック)
 	std::unique_ptr<PrimitiveInstance> visual_; // 見た目用のBox。当たり判定(Capsule)とは別物
 
 	// ---- トランスフォーム・物理状態 ----

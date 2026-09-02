@@ -10,6 +10,12 @@
     <Filter Include="Character">
       <UniqueIdentifier>{6c1a2e3f-9d4b-4a7c-8e2f-3b5d6a7c8e9f}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Common">
+      <UniqueIdentifier>{b8e4d2c3-5f6a-4d7b-8e9f-2a3b4c5d6e7f}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Stage">
+      <UniqueIdentifier>{a7f3c1d2-4e5b-4c6a-9d8e-1f2a3b4c5d6e}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
@@ -38,6 +44,9 @@
     <ClCompile Include="Character\Character.cpp">
       <Filter>Character</Filter>
     </ClCompile>
+    <ClCompile Include="Stage\StageGrid.cpp">
+      <Filter>Stage</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="GameApp.h" />
@@ -64,6 +73,12 @@
     </ClInclude>
     <ClInclude Include="Character\Character.h">
       <Filter>Character</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\IStageQuery.h">
+      <Filter>Common</Filter>
+    </ClInclude>
+    <ClInclude Include="Stage\StageGrid.h">
+      <Filter>Stage</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>
