@@ -125,6 +125,12 @@
     <ClCompile Include="Scene\Transition\TransitionManager.cpp" />
     <ClCompile Include="Character\Character.cpp" />
     <ClCompile Include="Stage\StageGrid.cpp" />
+    <ClCompile Include="Weapon\UnarmedWeapon.cpp" />
+    <ClCompile Include="Weapon\Pistol.cpp" />
+    <ClCompile Include="Weapon\AssaultRifle.cpp" />
+    <ClCompile Include="Weapon\Shotgun.cpp" />
+    <ClCompile Include="Weapon\ArcingProjectile.cpp" />
+    <ClCompile Include="Weapon\WeaponPickup.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="GameApp.h" />
@@ -138,6 +144,14 @@
     <ClInclude Include="Character\Character.h" />
     <ClInclude Include="Common\IStageQuery.h" />
     <ClInclude Include="Stage\StageGrid.h" />
+    <ClInclude Include="Weapon\ProjectileSpawnRequest.h" />
+    <ClInclude Include="Weapon\Weapon.h" />
+    <ClInclude Include="Weapon\UnarmedWeapon.h" />
+    <ClInclude Include="Weapon\Pistol.h" />
+    <ClInclude Include="Weapon\AssaultRifle.h" />
+    <ClInclude Include="Weapon\Shotgun.h" />
+    <ClInclude Include="Weapon\ArcingProjectile.h" />
+    <ClInclude Include="Weapon\WeaponPickup.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <!--

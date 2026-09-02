@@ -5,9 +5,12 @@
 
 #include "Scene.h"
 #include "Camera.h"
+#include "Vector4.h"
 #include "Primitive/PrimitiveInstance.h"
 #include "Character/Character.h"
 #include "Stage/StageGrid.h"
+#include "Weapon/ArcingProjectile.h"
+#include "Weapon/WeaponPickup.h"
 
 /// <summary>
 /// ゲーム本編の雛形(フェーズ1: 触れる最小プロトタイプ)。
@@ -62,6 +65,42 @@ private:
 	int playerPoints_ = 0;
 	int dummyPoints_ = 0;
 
+	// 秒間隔でステージにランダムな武器を1つ湧かせるまでのカウントダウン。
+	static constexpr float kWeaponSpawnInterval = 8.0f;
+	float weaponSpawnTimer_ = kWeaponSpawnInterval;
+
+	// 飛んでいる銃弾・投げ捨てた武器。どちらも ArcingProjectile で表現する(クラス冒頭コメント参照)。
+	std::vector<std::unique_ptr<ArcingProjectile>> flyingObjects_;
+
+	// ステージにタイマーで湧く、その場に静止した拾える武器。
+	std::vector<std::unique_ptr<WeaponPickup>> pickups_;
+
+	//====================
+	// デバッグ表示(攻撃判定・照準がどこを向いているかを目視確認するため)
+	//====================
+
+	/// <summary>一定時間だけ表示され続ける、当たり判定確認用の球ワイヤーフレーム。</summary>
+	struct DebugFlash {
+		Vector3 position{};
+		float radius = 0.0f;
+		Vector4 color{ 1.0f, 1.0f, 1.0f, 1.0f };
+		float remaining = 0.0f; // 0以下になったら消える
+	};
+	static constexpr float kDebugFlashDuration = 0.25f; // 攻撃判定は一瞬だけなので、少し残して見えるようにする
+	std::vector<DebugFlash> debugFlashes_;
+
+	/// <summary>照準計算(マウスの逆投影)が実際にどのワールド座標を指しているか。毎フレーム更新し、デバッグ描画に使う。</summary>
+	Vector3 lastAimWorldPoint_{};
+
+	/// <summary>pos を中心とした半径 radius の球を duration 秒だけデバッグ表示する。</summary>
+	void AddDebugFlash(const Vector3& pos, float radius, const Vector4& color, float duration = kDebugFlashDuration);
+
+	/// <summary>debugFlashes_ の残り時間を進め、尽きたものを取り除く。</summary>
+	void UpdateDebugFlashes(float dt);
+
+	/// <summary>debugFlashes_ と、プレイヤーの照準方向(レイ+着弾点)をデバッグ描画する。</summary>
+	void DrawDebugAids();
+
 	/// <summary>
 	/// attacker が直前の Update() で攻撃していれば(ConsumePendingAttack)、そのヒットボックスを
 	/// defender の ReceiveHit() に渡して実際の当たり判定・ダメージ適用まで行わせる。
@@ -85,4 +124,34 @@ private:
 
 	/// <summary>アリーナの左右境界(kArenaHalfExtentX)の外に出ているか。</summary>
 	bool IsOutOfBounds(const Vector3& pos) const;
+
+	//====================
+	// 武器・弾(フェーズ2)
+	//====================
+
+	/// <summary>
+	/// shooter が直前の Update() で銃を発射/武器を投げていれば(ConsumePendingProjectileSpawns /
+	/// ConsumePendingThrow)、そのリクエストぶんの ArcingProjectile を生成して flyingObjects_ に積む。
+	/// 銃弾と投げ武器は見た目(visualType/visualScale)だけを変えて、同じ経路で生成する。
+	/// </summary>
+	void SpawnFromCharacter(Character& shooter);
+
+	/// <summary>flyingObjects_ を1つ生成して積む共通処理。</summary>
+	void SpawnFlyingObject(const ProjectileSpawnRequest& spec, Character* owner,
+		PrimitiveInstance::PrimitiveType visualType, const Vector3& visualScale, const char* name);
+
+	/// <summary>
+	/// flyingObjects_ を全て更新し、生きているものは相手キャラとの命中判定を取る。
+	/// 消滅したものはリストから取り除く。
+	/// </summary>
+	void UpdateFlyingObjects(float dt);
+
+	/// <summary>
+	/// character が無武装(CanPickUpWeapon)で pickups_ のいずれかに重なっていれば、
+	/// その場で装備させて該当 pickup を消費済みにする。
+	/// </summary>
+	void TryPickUpWeapon(Character& character);
+
+	/// <summary>weaponSpawnTimer_ を進め、0以下になったらランダムな武器をランダムな位置に1つ湧かせる。</summary>
+	void UpdateWeaponSpawner(float dt);
 };

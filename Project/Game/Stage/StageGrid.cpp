@@ -186,6 +186,11 @@ int StageGrid::DamageSphere(const Vector3& center, float radius, float damage) {
 		if (t.hp <= 0.0f) {
 			t.destroyed = true;
 			++broke;
+		} else if (t.visual) {
+			// 破壊されるまでは見た目の変化が無く「本当にダメージが通っているのか」が
+			// 分かりにくいので、残りHPの割合ぶん赤みを強くする(満タン=白 → 瀕死=赤)。
+			const float ratio = (std::max)(t.hp / kBreakableHP, 0.0f);
+			t.visual->GetMesh().SetColor({ 1.0f, ratio, ratio, 1.0f });
 		}
 	}
 	return broke;
@@ -195,6 +200,9 @@ void StageGrid::ResetTerrain() {
 	for (auto& t : tiles_) {
 		if (t.value / 10 == kKindBreakable) {
 			t.hp = kBreakableHP;
+			if (t.visual) {
+				t.visual->GetMesh().SetColor({ 1.0f, 1.0f, 1.0f, 1.0f }); // ダメージ表示の赤みも元の白へ戻す
+			}
 		}
 		t.destroyed = false;
 	}

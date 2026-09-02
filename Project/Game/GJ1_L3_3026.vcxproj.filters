@@ -16,6 +16,9 @@
     <Filter Include="Stage">
       <UniqueIdentifier>{a7f3c1d2-4e5b-4c6a-9d8e-1f2a3b4c5d6e}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Weapon">
+      <UniqueIdentifier>{d4e5f6a7-8b9c-4d1e-9f2a-3c4d5e6f7a8b}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
@@ -46,6 +49,24 @@
     </ClCompile>
     <ClCompile Include="Stage\StageGrid.cpp">
       <Filter>Stage</Filter>
+    </ClCompile>
+    <ClCompile Include="Weapon\UnarmedWeapon.cpp">
+      <Filter>Weapon</Filter>
+    </ClCompile>
+    <ClCompile Include="Weapon\Pistol.cpp">
+      <Filter>Weapon</Filter>
+    </ClCompile>
+    <ClCompile Include="Weapon\AssaultRifle.cpp">
+      <Filter>Weapon</Filter>
+    </ClCompile>
+    <ClCompile Include="Weapon\Shotgun.cpp">
+      <Filter>Weapon</Filter>
+    </ClCompile>
+    <ClCompile Include="Weapon\ArcingProjectile.cpp">
+      <Filter>Weapon</Filter>
+    </ClCompile>
+    <ClCompile Include="Weapon\WeaponPickup.cpp">
+      <Filter>Weapon</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -79,6 +100,30 @@
     </ClInclude>
     <ClInclude Include="Stage\StageGrid.h">
       <Filter>Stage</Filter>
+    </ClInclude>
+    <ClInclude Include="Weapon\ProjectileSpawnRequest.h">
+      <Filter>Weapon</Filter>
+    </ClInclude>
+    <ClInclude Include="Weapon\Weapon.h">
+      <Filter>Weapon</Filter>
+    </ClInclude>
+    <ClInclude Include="Weapon\UnarmedWeapon.h">
+      <Filter>Weapon</Filter>
+    </ClInclude>
+    <ClInclude Include="Weapon\Pistol.h">
+      <Filter>Weapon</Filter>
+    </ClInclude>
+    <ClInclude Include="Weapon\AssaultRifle.h">
+      <Filter>Weapon</Filter>
+    </ClInclude>
+    <ClInclude Include="Weapon\Shotgun.h">
+      <Filter>Weapon</Filter>
+    </ClInclude>
+    <ClInclude Include="Weapon\ArcingProjectile.h">
+      <Filter>Weapon</Filter>
+    </ClInclude>
+    <ClInclude Include="Weapon\WeaponPickup.h">
+      <Filter>Weapon</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>
