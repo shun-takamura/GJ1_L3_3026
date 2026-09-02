@@ -7,6 +7,9 @@
     <Filter Include="Scene\Transition">
       <UniqueIdentifier>{1032d353-a6af-5100-b4df-eaf8536b49df}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Character">
+      <UniqueIdentifier>{6c1a2e3f-9d4b-4a7c-8e2f-3b5d6a7c8e9f}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
@@ -32,6 +35,9 @@
     <ClCompile Include="Scene\Transition\TransitionManager.cpp">
       <Filter>Scene\Transition</Filter>
     </ClCompile>
+    <ClCompile Include="Character\Character.cpp">
+      <Filter>Character</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="GameApp.h" />
@@ -55,6 +61,9 @@
     </ClInclude>
     <ClInclude Include="Scene\Transition\TransitionManager.h">
       <Filter>Scene\Transition</Filter>
+    </ClInclude>
+    <ClInclude Include="Character\Character.h">
+      <Filter>Character</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>
