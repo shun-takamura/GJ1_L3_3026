@@ -68,6 +68,7 @@ void ArcingProjectile::Update(float dt) {
 		const Vector3 half{ radius_, radius_, radius_ };
 		if (stage_->OverlapsSolid(position_, half) || !stage_->IsPointInsideBounds(position_)) {
 			dead_ = true;
+			diedOnTerrain_ = true;
 			return;
 		}
 	}

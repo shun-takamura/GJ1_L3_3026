@@ -49,4 +49,12 @@ public:
 	/// ※ IStageQuery 正式版の凍結対象に含める（B の LOS 判定でも必要になる想定）。
 	/// </summary>
 	virtual bool SegmentHitsSolid(const Vector3& a, const Vector3& b) const = 0;
+
+	/// <summary>
+	/// pos の足元の足場が「壊れる床」で、かつそのすぐ下に落下を受け止める床が
+	/// 無いか（＝そこを撃てば下へ落とせる危うい足場）。
+	/// AI が「プレイヤーの立つ足場を崩す」判断に使う。
+	/// ※ IStageQuery 正式版の凍結対象に含める（B の危険床表示等でも使える想定）。
+	/// </summary>
+	virtual bool IsPrecariousBreakableFloor(const Vector3& pos) const = 0;
 };

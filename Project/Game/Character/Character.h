@@ -121,6 +121,11 @@ public:
 	float GetMaxHP() const { return kMaxHP; }
 	bool IsDead() const { return hp_ <= 0.0f; }
 
+	/// <summary>接地しているか。AI の学習(プレイヤーのジャンプ頻度計測)用に公開。</summary>
+	bool IsGrounded() const { return grounded_; }
+	/// <summary>しゃがみ中か。AI の学習(しゃがみ回避の癖の計測)用に公開。</summary>
+	bool IsCrouching() const { return isCrouching_; }
+
 	/// <summary>
 	/// HPを全回復し、ノックバック速度や落下速度もクリアして spawnPos へ再配置する。
 	/// あくまで「その場でテストを続けられるようにするための仮リセット」であり、

@@ -1,6 +1,7 @@
 #pragma once
 
 class Character;
+class IStageQuery;
 
 /// <summary>
 /// プレイヤーの行動を試合を通して観測し、AI がポイントを取られるたびに
@@ -23,7 +24,8 @@ public:
 	void Reset();
 
 	/// <summary>毎フレーム、プレイヤーの状態を観測して統計へ積む。</summary>
-	void Observe(const Character& player, const Character& enemy, float dt);
+	void Observe(const Character& player, const Character& enemy,
+		const IStageQuery* stage, float dt);
 
 	/// <summary>enemy がポイントを取られた瞬間に呼ぶ。難易度ティアを1つ上げる。</summary>
 	void OnPointConceded();
@@ -34,21 +36,29 @@ public:
 	int   Tier() const { return tier_; }
 	float ReactionDelay() const;  // 秒。ティアが上がるほど短い（＝速く反応する）
 	float AimErrorRad() const;    // ラジアン。ティアが上がるほど小さい（＝正確になる）
+	float RampT() const;          // 0〜1 に正規化した強化進行度（二次カーブ適用済み）
 
 	//==============================
-	// Day5 の対抗行動が読む観測結果（今は近似値 or 未計測。TODO を残す）
+	// Day5 の対抗行動が読む観測結果
 	//==============================
-	float PreferredRange() const;                 // プレイヤーが保ちがちな間合い（計測済み）
-	float CrouchRatio() const;                    // TODO(Day5): Character のしゃがみ参照 or GameScene からのイベントが必要
-	float JumpsPerSecond() const;                 // TODO(Day5): 接地状態の参照が必要
-	bool  LikesCampingBreakable() const { return campingBreakableFloor_; } // TODO(Day5)
+	float PreferredRange() const;          // プレイヤーが保ちがちな間合い
+	float CrouchRatio() const;             // 観測時間のうちしゃがんでいた割合 0〜1
+	float JumpsPerSecond() const;          // 単位時間あたりのジャンプ回数
+	bool  LikesCampingBreakable() const;   // 危うい壊れ床の上に居座りがちか
 
 private:
 	static constexpr int   kMaxTier = 10; // 10 ポイント先取なので最大 10 段
-	static constexpr float kReactionAtTier0 = 0.40f;
-	static constexpr float kReactionAtMaxTier = 0.10f;
-	static constexpr float kAimErrAtTier0 = 0.20f;
-	static constexpr float kAimErrAtMaxTier = 0.02f;
+	static constexpr float kReactionAtTier0 = 0.32f;   // 序盤はプレイヤーも慣れていないので緩め
+	static constexpr float kReactionAtMaxTier = 0.07f;
+	static constexpr float kAimErrAtTier0 = 0.15f;     // ラジアン(≒9度)。序盤は結構外す
+	static constexpr float kAimErrAtMaxTier = 0.015f;
+
+	// 強化カーブの指数。1.0=線形、2.0=二次(序盤ゆるやか→終盤急に強く)。
+	// t = tier/kMaxTier を t^kRampExponent に変換してから補間する。
+	static constexpr float kRampExponent = 2.0f;
+
+	// この割合を超えたら「その癖がある」と見なすしきい値。
+	static constexpr float kCampingRatioThreshold = 0.35f;
 
 	int tier_ = 0;
 
@@ -56,5 +66,12 @@ private:
 	float observedTime_ = 0.0f;
 	float rangeSum_ = 0.0f;
 	int   rangeSamples_ = 0;
-	bool  campingBreakableFloor_ = false; // TODO(Day5)
+
+	int   jumpCount_ = 0;
+	bool  prevGroundedValid_ = false;
+	bool  prevGrounded_ = true;
+	float prevPlayerY_ = 0.0f;
+
+	float crouchTime_ = 0.0f;
+	float campingTime_ = 0.0f;
 };

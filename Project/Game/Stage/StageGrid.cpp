@@ -291,6 +291,19 @@ bool StageGrid::SegmentHitsSolid(const Vector3& a, const Vector3& b) const {
 	return false;
 }
 
+bool StageGrid::IsPrecariousBreakableFloor(const Vector3& pos) const {
+	// pos の足元は「キャラ中心の1マス下」あたり。そこが壊れる床で、
+	// さらにその下（2マス下）に何も無ければ、撃たれると落下する危うい足場。
+	int cx, cy;
+	WorldToCell(pos, cx, cy);
+	const int belowY = cy + 1;      // ワールドで下（WorldToCell は y 下ほど cy 大）
+	const int below2Y = cy + 2;
+	if (!IsBreakableCell(cx, belowY)) {
+		return false;
+	}
+	return !IsSolidCell(cx, below2Y);
+}
+
 StageMoveResult StageGrid::MoveAabb(const Vector3& from, const Vector3& to, const Vector3& half) const {
 	StageMoveResult result;
 	Vector3 pos = from;

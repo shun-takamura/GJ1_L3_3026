@@ -37,7 +37,7 @@ public:
 	PerceptionResult Sense(const PerceptionInput& in) const;
 
 	// EnemyBrain 側でも参照したいしきい値。
-	static constexpr float kLowHpRatio = 0.3f;   // maxHP のこの割合を割ったら selfLowHp
+	static constexpr float kLowHpRatio = 0.22f;  // maxHP のこの割合を割ったら selfLowHp（低め＝粘る）
 	static constexpr float kVerticalStep = 1.2f; // これ以上の高低差で targetAbove / targetBelow
 	static constexpr float kEyeHeight = 0.5f;    // 射線チェックで足元から少し上げる高さ
 };
