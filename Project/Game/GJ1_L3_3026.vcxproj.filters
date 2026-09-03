@@ -19,6 +19,9 @@
     <Filter Include="Weapon">
       <UniqueIdentifier>{d4e5f6a7-8b9c-4d1e-9f2a-3c4d5e6f7a8b}</UniqueIdentifier>
     </Filter>
+    <Filter Include="AI">
+      <UniqueIdentifier>{e5f6a7b8-9c1d-4e2f-8a3b-4d5e6f7a8b9c}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
@@ -68,6 +71,18 @@
     <ClCompile Include="Weapon\WeaponPickup.cpp">
       <Filter>Weapon</Filter>
     </ClCompile>
+    <ClCompile Include="AI\AIPerception.cpp">
+      <Filter>AI</Filter>
+    </ClCompile>
+    <ClCompile Include="AI\AINavigation.cpp">
+      <Filter>AI</Filter>
+    </ClCompile>
+    <ClCompile Include="AI\EnemyBrain.cpp">
+      <Filter>AI</Filter>
+    </ClCompile>
+    <ClCompile Include="AI\PlayerModel.cpp">
+      <Filter>AI</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="GameApp.h" />
@@ -97,6 +112,21 @@
     </ClInclude>
     <ClInclude Include="Common\IStageQuery.h">
       <Filter>Common</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\CharacterInput.h">
+      <Filter>Common</Filter>
+    </ClInclude>
+    <ClInclude Include="AI\AIPerception.h">
+      <Filter>AI</Filter>
+    </ClInclude>
+    <ClInclude Include="AI\AINavigation.h">
+      <Filter>AI</Filter>
+    </ClInclude>
+    <ClInclude Include="AI\EnemyBrain.h">
+      <Filter>AI</Filter>
+    </ClInclude>
+    <ClInclude Include="AI\PlayerModel.h">
+      <Filter>AI</Filter>
     </ClInclude>
     <ClInclude Include="Stage\StageGrid.h">
       <Filter>Stage</Filter>

@@ -149,8 +149,7 @@ void GameScene::Initialize() {
 
 	//===================================
 	// キャラクター
-	// player_ は操作キャラ、dummy_ は殴る練習台(静止したまま動かない)。
-	// 本物の対戦AIはフェーズ4の別タスクなので、今は dummy_ で代用している。
+	// player_ は操作キャラ、enemy_ は敵キャラ(行動は enemyBrain_ が決める)。
 	// どちらも Z=0 の同じ奥行きに置く(横視点なので全キャラ同じZ平面上にいる想定)。
 	// スポーン座標と地形当たり判定はステージへ委譲する。
 	//===================================
@@ -164,19 +163,27 @@ void GameScene::Initialize() {
 	player_->Initialize(camera_.get(), "Player", playerSpawn_);
 	player_->SetStage(stage_.get());
 
-	dummy_ = std::make_unique<Character>();
-	dummy_->Initialize(camera_.get(), "Dummy", enemySpawn_);
-	dummy_->SetStage(stage_.get());
+	enemy_ = std::make_unique<Character>();
+	enemy_->Initialize(camera_.get(), "Enemy", enemySpawn_);
+	enemy_->SetStage(stage_.get());
+
+	// 敵 AI と学習モデル。GameScene は Think() の結果を Character へ渡すだけ。
+	enemyBrain_ = std::make_unique<EnemyBrain>();
+	enemyBrain_->Initialize(kEnemyTurretMode);
+	playerModel_ = std::make_unique<PlayerModel>();
+	playerModel_->Reset();
 
 	playerPoints_ = 0;
-	dummyPoints_ = 0;
+	enemyPoints_ = 0;
 }
 
 void GameScene::Finalize() {
 	// 依存関係はないが、生成順と逆順に破棄する(可読性のための慣習)。
 	pickups_.clear();
 	flyingObjects_.clear();
-	dummy_.reset();
+	playerModel_.reset();
+	enemyBrain_.reset();
+	enemy_.reset();
 	player_.reset();
 	stage_.reset();
 	camera_.reset();
@@ -263,9 +270,96 @@ void GameScene::Update() {
 
 	stage_->Update();
 
-	player_->Update(dt, moveX, jumpTriggered, crouchHeld, aimDir.x, aimDir.y, attackTriggered, attackHeld, throwTriggered);
-	// 的は入力なしで呼ぶだけ(重力等の物理更新は必要なので Update 自体は呼ぶ)。照準は右向き固定。
-	dummy_->Update(dt, 0.0f, false, false, 1.0f, 0.0f, false, false, false);
+	// デバイスから読んだ生の状態を、解決済みの意図(CharacterInput)にまとめる。
+	// プレイヤーも敵 AI も、ここから先は同じ CharacterInput 経由で Character を動かす。
+	CharacterInput playerInput;
+	playerInput.moveX = moveX;
+	playerInput.jumpTriggered = jumpTriggered;
+	playerInput.crouchHeld = crouchHeld;
+	playerInput.aimDirX = aimDir.x;
+	playerInput.aimDirY = aimDir.y;
+	playerInput.attackTriggered = attackTriggered;
+	playerInput.attackHeld = attackHeld;
+	playerInput.throwTriggered = throwTriggered;
+
+	// 敵の意図は EnemyBrain が決める(入力デバイスは一切読まない)。
+	// 敵が素手のとき拾いに行けるよう、取得可能で最寄りの武器 pickup を渡す。
+	// 「真上の別プラットフォームにあって歩いても跳んでも届かない」もの、
+	// および敵 AI が「届かない」と判断して避けているものは候補から除く。
+	Vector3 nearestPickupPos{};
+	bool hasNearestPickup = false;
+	{
+		const Vector3 ep = enemy_->GetPosition();
+		const EnemyBrain::PickupAvoid avoid = enemyBrain_->GetPickupAvoid();
+		float best = 1e18f;
+		for (const auto& pk : pickups_) {
+			if (pk->IsTaken()) continue;
+			const Vector3 pp = pk->GetPosition();
+			const float ddx = pp.x - ep.x;
+			const float ddy = pp.y - ep.y;
+			if (ddy > 3.0f && std::fabs(ddx) < 1.5f) continue;               // 真上で届かない
+			if (avoid.active && std::fabs(pp.x - avoid.x) < 2.5f) continue;  // AI が諦めた場所
+			const float d2 = ddx * ddx + ddy * ddy;
+			if (d2 < best) { best = d2; nearestPickupPos = pp; hasNearestPickup = true; }
+		}
+	}
+
+	// 敵に向かって飛んでくる弾（プレイヤーが撃ったもの）を探す。回避判断に使う。
+	Vector3 threatPos{};
+	Vector3 threatVel{};
+	float threatTtc = 0.0f;
+	bool threatActive = false;
+	{
+		const Vector3 ep = enemy_->GetPosition();
+		float bestTtc = 1e9f;
+		for (const auto& obj : flyingObjects_) {
+			if (obj->IsDead() || obj->GetOwner() == enemy_.get()) {
+				continue; // 自分の弾は脅威じゃない
+			}
+			const Vector3 pp = obj->GetPosition();
+			const Vector3 pv = obj->GetVelocity();
+			const float dx = ep.x - pp.x;
+			if (dx * pv.x <= 0.0f || std::fabs(pv.x) < 1.0f) {
+				continue; // 敵の方へ向かっていない
+			}
+			const float ttc = dx / pv.x;
+			// 到達時点の弾の高さが敵の胴体あたりを通るか（ざっくり）。
+			const float yAtHit = pp.y + pv.y * ttc;
+			if (std::fabs(yAtHit - ep.y) > 1.6f) {
+				continue;
+			}
+			if (ttc < bestTtc) {
+				bestTtc = ttc;
+				threatPos = pp;
+				threatVel = pv;
+				threatTtc = ttc;
+				threatActive = true;
+			}
+		}
+	}
+
+	BrainContext brainCtx;
+	brainCtx.self = enemy_.get();
+	brainCtx.target = player_.get();
+	brainCtx.stage = stage_.get();
+	brainCtx.playerModel = playerModel_.get();
+	brainCtx.nearestPickup = hasNearestPickup ? &nearestPickupPos : nullptr;
+	brainCtx.incomingThreat = threatActive;
+	brainCtx.threatPos = threatPos;
+	brainCtx.threatVel = threatVel;
+	brainCtx.threatTtc = threatTtc;
+	brainCtx.dt = dt;
+	const CharacterInput enemyInput = enemyBrain_->Think(brainCtx);
+
+	player_->Update(dt, playerInput.moveX, playerInput.jumpTriggered, playerInput.crouchHeld,
+		playerInput.aimDirX, playerInput.aimDirY, playerInput.attackTriggered,
+		playerInput.attackHeld, playerInput.throwTriggered);
+	enemy_->Update(dt, enemyInput.moveX, enemyInput.jumpTriggered, enemyInput.crouchHeld,
+		enemyInput.aimDirX, enemyInput.aimDirY, enemyInput.attackTriggered,
+		enemyInput.attackHeld, enemyInput.throwTriggered);
+
+	// プレイヤーの行動を観測(ポイントを取られるたびに敵が強くなるための土台)。
+	playerModel_->Observe(*player_, *enemy_, stage_.get(), dt);
 
 	//===================================
 	// 当たり判定
@@ -281,14 +375,14 @@ void GameScene::Update() {
 	// CollisionSystem の毎フレーム総当たりには乗せず、両者ぶん明示的に ResolveAttack を呼ぶ。
 	// 攻撃は「一瞬だけ判定が必要」なもので、常時判定する仕組みに乗せる必要がないため。
 	//===================================
-	ResolveAttack(*player_, *dummy_, "Player");
-	ResolveAttack(*dummy_, *player_, "Dummy");
+	ResolveAttack(*player_, *enemy_, "Player");
+	ResolveAttack(*enemy_, *player_, "Enemy");
 
 	//===================================
 	// 銃弾・投げ捨てた武器の生成 → 更新・命中判定
 	//===================================
 	SpawnFromCharacter(*player_);
-	SpawnFromCharacter(*dummy_);
+	SpawnFromCharacter(*enemy_);
 	UpdateFlyingObjects(dt);
 
 	//===================================
@@ -298,7 +392,7 @@ void GameScene::Update() {
 		pickup->Update(); // 位置は動かないが、WVP計算のため毎フレーム呼ぶ必要がある
 	}
 	TryPickUpWeapon(*player_);
-	TryPickUpWeapon(*dummy_);
+	TryPickUpWeapon(*enemy_);
 	UpdateWeaponSpawner(dt);
 
 	//===================================
@@ -306,8 +400,39 @@ void GameScene::Update() {
 	// 本物の「10ポイント先取・次ステージへ自動遷移」といったラウンド進行はフェーズ5の別タスク。
 	// ここでは「テストを継続できること」を優先して、即座にリセットするだけにしている。
 	//===================================
-	CheckKnockoutAndReset(*player_, *dummy_, dummyPoints_, playerSpawn_, "Player");
-	CheckKnockoutAndReset(*dummy_, *player_, playerPoints_, enemySpawn_, "Dummy");
+	// 各キャラの「やられ方」を、リセット前に記録しておく。
+	const bool enemyWasOutOfBounds = IsOutOfBounds(enemy_->GetPosition());
+	const bool playerWasOutOfBounds = IsOutOfBounds(player_->GetPosition());
+	const bool playerWasCrouching = player_->IsCrouching();
+	const float playerDeathX = player_->GetPosition().x;
+	float pePairDist = 0.0f;
+	{
+		const Vector3 pp = player_->GetPosition();
+		const Vector3 pe = enemy_->GetPosition();
+		const float dx = pp.x - pe.x;
+		const float dy = pp.y - pe.y;
+		pePairDist = std::sqrt(dx * dx + dy * dy);
+	}
+
+	const bool koPlayer = CheckKnockoutAndReset(*player_, *enemy_, enemyPoints_, playerSpawn_, "Player");
+	const bool koEnemy = CheckKnockoutAndReset(*enemy_, *player_, playerPoints_, enemySpawn_, "Enemy");
+	if (koPlayer || koEnemy) {
+		enemyBrain_->ResetForNewRound();
+	}
+	if (koEnemy) {
+		// 敵が撃破/場外 = プレイヤーが1点。ここで敵が「学習」して強くなる。
+		playerModel_->OnPointConceded();
+		// 場外での自滅なら「穴に慎重になる」学習も進める。
+		enemyBrain_->NotifyDeath(enemyWasOutOfBounds);
+	}
+	if (koPlayer) {
+		// プレイヤーが撃破/場外 = 敵が1点。倒し方の傾向を学習する。
+		PlayerModel::DefeatCause cause = playerWasOutOfBounds
+			? PlayerModel::DefeatCause::OutOfBounds
+			: (pePairDist < 2.5f ? PlayerModel::DefeatCause::Melee
+				: PlayerModel::DefeatCause::Ranged);
+		playerModel_->OnPlayerDefeated(cause, playerDeathX, playerWasCrouching);
+	}
 
 	//===================================
 	// デバッグ表示の残り時間を進める(実際の描画は Draw() 側)
@@ -361,12 +486,12 @@ bool GameScene::IsOutOfBounds(const Vector3& pos) const {
 	return !stage_ || !stage_->IsPointInsideBounds(pos);
 }
 
-void GameScene::CheckKnockoutAndReset(Character& target, Character& other,
+bool GameScene::CheckKnockoutAndReset(Character& target, Character& other,
 	int& otherPoints, const Vector3& targetRespawn, const char* targetLabel) {
 
 	// target が生きていて、かつ場内にいるなら何も起きていない
 	if (!target.IsDead() && !IsOutOfBounds(target.GetPosition())) {
-		return;
+		return false;
 	}
 
 	// ここに来た = target がHP0になったか、アリーナ外に出た(=やられた)
@@ -383,6 +508,7 @@ void GameScene::CheckKnockoutAndReset(Character& target, Character& other,
 	if (stage_) {
 		stage_->ResetTerrain();
 	}
+	return true;
 }
 
 void GameScene::AddDebugFlash(const Vector3& pos, float radius, const Vector4& color, float duration) {
@@ -454,11 +580,16 @@ void GameScene::UpdateFlyingObjects(float dt) {
 	for (auto& obj : flyingObjects_) {
 		obj->Update(dt);
 		if (obj->IsDead()) {
-			continue; // 寿命切れ/地形衝突で既に消えている。命中判定を取る意味がない
+			// 地形に当たって消えた弾は、その位置の「壊れる床」を削る
+			// (プレイヤー・敵どちらの弾でも同じ。AI の「足場を撃って落とす」もこれで成立する)。
+			if (obj->DiedOnTerrain() && stage_) {
+				stage_->DamageSphere(obj->GetPosition(), obj->GetRadius() * 1.5f, obj->GetDamage());
+			}
+			continue; // 命中判定を取る意味がない
 		}
 		// 発射者自身には ArcingProjectile::TryHitCharacter 内で当たらないようになっている。
 		obj->TryHitCharacter(*player_);
-		obj->TryHitCharacter(*dummy_);
+		obj->TryHitCharacter(*enemy_);
 	}
 
 	// 消滅した物のうち、投げた武器の積み荷(残弾込み)を持っているものは、
@@ -540,7 +671,7 @@ void GameScene::UpdateWeaponSpawner(float dt) {
 void GameScene::Draw() {
 	if (stage_) stage_->Draw();
 	if (player_) player_->Draw();
-	if (dummy_) dummy_->Draw();
+	if (enemy_) enemy_->Draw();
 	for (auto& pickup : pickups_) {
 		pickup->Draw();
 	}
@@ -571,12 +702,44 @@ void GameScene::Draw() {
 		tr->DrawText("ESC / (B) : Title", { 32.0f, 96.0f }, 0.8f);
 
 		char hpLine[128];
-		snprintf(hpLine, sizeof(hpLine), "Player HP: %.0f   Dummy HP: %.0f", player_->GetHP(), dummy_->GetHP());
+		snprintf(hpLine, sizeof(hpLine), "Player HP: %.0f   Enemy HP: %.0f", player_->GetHP(), enemy_->GetHP());
 		tr->DrawText(hpLine, { 32.0f, 128.0f }, 0.8f);
 
 		char pointLine[128];
-		snprintf(pointLine, sizeof(pointLine), "Points  Player: %d   Dummy: %d", playerPoints_, dummyPoints_);
+		snprintf(pointLine, sizeof(pointLine), "Points  Player: %d   Enemy: %d", playerPoints_, enemyPoints_);
 		tr->DrawText(pointLine, { 32.0f, 160.0f }, 0.8f);
+
+		// 敵 AI の状態と学習ティア(デバッグ表示。本番 UI は B)。
+		char aiLine[160];
+		const int enemyAmmo = enemy_->GetEquippedAmmo();
+		snprintf(aiLine, sizeof(aiLine), "Enemy AI: %s   Weapon: %s(%d)   Tier: %d   FallCaution: %d",
+			enemyBrain_->GetStateName(), enemy_->GetEquippedWeaponName().c_str(), enemyAmmo,
+			playerModel_->Tier(), enemyBrain_->GetFallCaution());
+		tr->DrawText(aiLine, { 32.0f, 224.0f }, 0.8f);
+
+		char obsLine[160];
+		snprintf(obsLine, sizeof(obsLine), "Observed  Jump/s: %.2f  Crouch: %.0f%%  Camp: %s",
+			playerModel_->JumpsPerSecond(), playerModel_->CrouchRatio() * 100.0f,
+			playerModel_->LikesCampingBreakable() ? "yes" : "no");
+		tr->DrawText(obsLine, { 32.0f, 256.0f }, 0.8f);
+
+		const EnemyBrain::Debug d = enemyBrain_->GetDebug();
+		char dbgLine[192];
+		snprintf(dbgLine, sizeof(dbgLine),
+			"AIdbg move:%.1f edgeBias:%.0f blocked:%d fetch:%d bl:%d pkDist:%.1f frozen:%.1f",
+			d.moveX, d.edgeBias, d.terrainBlocked ? 1 : 0, d.wantFetch ? 1 : 0,
+			d.blacklisted ? 1 : 0, d.pickupDist, d.frozen);
+		tr->DrawText(dbgLine, { 32.0f, 288.0f }, 0.7f);
+
+		char learnLine[192];
+		const int pushDir = playerModel_->PreferredPushDir();
+		snprintf(learnLine, sizeof(learnLine),
+			"Learned  Lead:%.2f Dodge:%.2f Spacing:%.2f | Push:%s Close:%d Ranged:%d",
+			playerModel_->LeadFactor(), playerModel_->DodgeSkill(), playerModel_->SpacingSkill(),
+			pushDir > 0 ? "R" : (pushDir < 0 ? "L" : "-"),
+			playerModel_->PrefersCloseCombat() ? 1 : 0,
+			playerModel_->PrefersRangedKeepaway() ? 1 : 0);
+		tr->DrawText(learnLine, { 32.0f, 316.0f }, 0.7f);
 
 		// 装備中の武器名と残弾(素手など弾の概念が無い武器は kInfiniteAmmo なので数値を出さない)。
 		char weaponLine[128];
