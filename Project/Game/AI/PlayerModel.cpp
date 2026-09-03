@@ -34,6 +34,11 @@ void PlayerModel::Reset() {
 	prevPlayerY_ = 0.0f;
 	crouchTime_ = 0.0f;
 	campingTime_ = 0.0f;
+	defeatOob_[0] = 0;
+	defeatOob_[1] = 0;
+	defeatMelee_ = 0;
+	defeatRanged_ = 0;
+	defeatCrouching_ = 0;
 }
 
 void PlayerModel::Observe(const Character& player, const Character& enemy,
@@ -84,6 +89,50 @@ void PlayerModel::Observe(const Character& player, const Character& enemy,
 void PlayerModel::OnPointConceded() {
 	tier_ = (std::min)(tier_ + 1, kMaxTier);
 	Log("PlayerModel: プレイヤーに得点された -> 学習ティア " + std::to_string(tier_) + "\n");
+}
+
+void PlayerModel::OnPlayerDefeated(DefeatCause cause, float playerX, bool playerWasCrouching) {
+	switch (cause) {
+		case DefeatCause::OutOfBounds:
+			// ステージ中央は x=0（StageGrid）。落ちた側をカウントする。
+			defeatOob_[(playerX >= 0.0f) ? 1 : 0]++;
+			break;
+		case DefeatCause::Melee:  ++defeatMelee_;  break;
+		case DefeatCause::Ranged: ++defeatRanged_; break;
+	}
+	if (playerWasCrouching) {
+		++defeatCrouching_;
+	}
+}
+
+float PlayerModel::LeadFactor() const {
+	return Lerp(0.35f, 1.0f, RampT());
+}
+
+float PlayerModel::DodgeSkill() const {
+	return Lerp(0.0f, 0.9f, RampT());
+}
+
+float PlayerModel::SpacingSkill() const {
+	return RampT();
+}
+
+int PlayerModel::PreferredPushDir() const {
+	const int total = defeatOob_[0] + defeatOob_[1];
+	if (total < 2) {
+		return 0; // サンプル不足
+	}
+	if (defeatOob_[1] >= defeatOob_[0] + 2) return 1;  // 右へ落ちやすい → 右へ押す
+	if (defeatOob_[0] >= defeatOob_[1] + 2) return -1; // 左へ落ちやすい → 左へ押す
+	return 0;
+}
+
+bool PlayerModel::PrefersCloseCombat() const {
+	return defeatMelee_ >= 2 && defeatMelee_ > defeatRanged_;
+}
+
+bool PlayerModel::PrefersRangedKeepaway() const {
+	return defeatRanged_ >= 3 && defeatRanged_ > defeatMelee_ + 1;
 }
 
 float PlayerModel::ReactionDelay() const {

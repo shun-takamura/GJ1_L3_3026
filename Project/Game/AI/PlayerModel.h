@@ -30,6 +30,10 @@ public:
 	/// <summary>enemy がポイントを取られた瞬間に呼ぶ。難易度ティアを1つ上げる。</summary>
 	void OnPointConceded();
 
+	/// <summary>プレイヤーがやられた瞬間（＝敵が得点した）に呼ぶ。倒し方の傾向を集計する。</summary>
+	enum class DefeatCause { OutOfBounds, Melee, Ranged };
+	void OnPlayerDefeated(DefeatCause cause, float playerX, bool playerWasCrouching);
+
 	//==============================
 	// EnemyBrain が読む調整値（Day4 で有効）
 	//==============================
@@ -37,6 +41,20 @@ public:
 	float ReactionDelay() const;  // 秒。ティアが上がるほど短い（＝速く反応する）
 	float AimErrorRad() const;    // ラジアン。ティアが上がるほど小さい（＝正確になる）
 	float RampT() const;          // 0〜1 に正規化した強化進行度（二次カーブ適用済み）
+
+	//==============================
+	// テクニック系スキル（負けるほど伸びる。それぞれ別カーブ）
+	//==============================
+	float LeadFactor() const;    // 0.35〜1.0。置き撃ちのリード量の正確さ（序盤は外す）
+	float DodgeSkill() const;    // 0〜0.9。飛来弾に反応して回避できる確率
+	float SpacingSkill() const;  // 0〜1。撃ちながらの横移動量（序盤は棒立ち＝的）
+
+	//==============================
+	// 学習した「プレイヤーの倒し方」
+	//==============================
+	int  PreferredPushDir() const;      // -1/0/+1。プレイヤーを落としやすい向き（十分なサンプルが無ければ 0）
+	bool PrefersCloseCombat() const;    // 近接で倒せることが多い
+	bool PrefersRangedKeepaway() const; // 遠距離で倒せることが多い
 
 	//==============================
 	// Day5 の対抗行動が読む観測結果
@@ -74,4 +92,10 @@ private:
 
 	float crouchTime_ = 0.0f;
 	float campingTime_ = 0.0f;
+
+	// ---- 死因の集計 ----
+	int defeatOob_[2] = { 0, 0 }; // [0]=左へ落下 / [1]=右へ落下
+	int defeatMelee_ = 0;
+	int defeatRanged_ = 0;
+	int defeatCrouching_ = 0;     // やられた瞬間しゃがんでいた回数（参考）
 };

@@ -60,6 +60,10 @@ void EnemyBrain::ResetForNewRound() {
 	pickupBlacklistX_ = 0.0f;
 	terrainBlockedTimer_ = 0.0f;
 	frozenTimer_ = 0.0f;
+	corneredHoldTimer_ = 0.0f;
+	dodgeLatched_ = false;
+	dodgeRoll_ = false;
+	strafePhase_ = 0.0f;
 }
 
 void EnemyBrain::TransitionTo(State next) {
@@ -97,6 +101,7 @@ CharacterInput EnemyBrain::Think(const BrainContext& ctx) {
 	if (attackRefireTimer_ > 0.0f) attackRefireTimer_ -= dt;
 	if (jumpCooldown_ > 0.0f)      jumpCooldown_ -= dt;
 	if (throwCdTimer_ > 0.0f)      throwCdTimer_ -= dt;
+	if (corneredHoldTimer_ > 0.0f) corneredHoldTimer_ -= dt;
 
 	// ---- 索敵 ----
 	PerceptionInput pin;
@@ -122,12 +127,24 @@ CharacterInput EnemyBrain::Think(const BrainContext& ctx) {
 	float aimErrorAmp = 0.0f;
 	float crouchRatio = 0.0f;
 	bool campingBreakable = false;
+	float leadFactor = 0.5f;
+	float dodgeSkill = 0.0f;
+	float spacingSkill = 0.0f;
+	int pushDir = 0;
+	bool prefersClose = false;
+	bool prefersRanged = false;
 	if (ctx.playerModel) {
 		reactionDelay = ctx.playerModel->ReactionDelay();
 		reckless = (ctx.playerModel->Tier() < kRecklessUntilTier);
 		aimErrorAmp = ctx.playerModel->AimErrorRad();
 		crouchRatio = ctx.playerModel->CrouchRatio();
 		campingBreakable = ctx.playerModel->LikesCampingBreakable();
+		leadFactor = ctx.playerModel->LeadFactor();
+		dodgeSkill = ctx.playerModel->DodgeSkill();
+		spacingSkill = ctx.playerModel->SpacingSkill();
+		pushDir = ctx.playerModel->PreferredPushDir();
+		prefersClose = ctx.playerModel->PrefersCloseCombat();
+		prefersRanged = ctx.playerModel->PrefersRangedKeepaway();
 	}
 	// 自滅を重ねるほど「跳べる」と判断する幅を狭め、崖の検知距離を広げる（穴への学習）。
 	const float cautionFactor = 1.0f + 0.6f * static_cast<float>(selfFallCount_);
@@ -176,7 +193,7 @@ CharacterInput EnemyBrain::Think(const BrainContext& ctx) {
 	} else {
 		if (!wantMelee) {
 			const float leadTime = Clamp(p.distance / kBulletSpeedGuess, 0.0f, kMaxLeadTime);
-			aimX += targetVelX_ * leadTime;      // 進行方向へ置き撃ち
+			aimX += targetVelX_ * leadTime * leadFactor; // 進行方向へ置き撃ち（序盤はリードが甘い）
 		}
 		if (crouchCounter) {
 			aimY -= 0.5f;                         // 足元寄りを狙う
@@ -265,7 +282,8 @@ CharacterInput EnemyBrain::Think(const BrainContext& ctx) {
 			break;
 
 		case State::Approach:
-			if (p.selfLowHp && p.distance < kRetreatKeepOut) {
+			// 瀕死でも、相手が近接圏に踏み込んで来たときだけ引く（遠ければ撃ち続ける）。
+			if (p.selfLowHp && p.distance < kMeleeRange * 2.5f && corneredHoldTimer_ <= 0.0f) {
 				TransitionTo(State::Retreat);
 			} else if (wantWeaponFetch) {
 				TransitionTo(State::FetchWeapon);
@@ -277,7 +295,7 @@ CharacterInput EnemyBrain::Think(const BrainContext& ctx) {
 
 		case State::Attack: {
 			const float breakDist = wantMelee ? kMeleeRange * 2.5f : kRangedMax * 1.1f;
-			if (p.selfLowHp) {
+			if (p.selfLowHp && p.distance < kMeleeRange * 2.0f && corneredHoldTimer_ <= 0.0f) {
 				TransitionTo(State::Retreat);
 			} else if (losLostTimer_ > kLoSLostTimeout) {
 				TransitionTo(State::Approach);
@@ -307,7 +325,8 @@ CharacterInput EnemyBrain::Think(const BrainContext& ctx) {
 	// 距離が縮まらないまま一定時間経ったら、その pickup は（壁・段差で）届かないと判断し、
 	// 一時的に無視して戦闘へ戻る（届かない武器を追ってジャンプし続けるループを断つ）。
 	if (state_ == State::FetchWeapon && ctx.nearestPickup) {
-		if (stateTimer_ < 0.05f || pickupDist < fetchBestDist_ - 0.15f) {
+		if (stateTimer_ < 0.05f || pickupDist < fetchBestDist_ - 0.5f) {
+			// 「はっきり近づけた」ときだけ停滞タイマーをリセット（微振動では戻さない）。
 			fetchBestDist_ = pickupDist;
 			fetchStallTimer_ = 0.0f;
 		} else {
@@ -333,7 +352,23 @@ CharacterInput EnemyBrain::Think(const BrainContext& ctx) {
 			break;
 		case State::FetchWeapon:
 			if (ctx.nearestPickup) {
-				desiredMoveX = (ctx.nearestPickup->x >= pin.selfPos.x) ? 1.0f : -1.0f;
+				const float pdx = ctx.nearestPickup->x - pin.selfPos.x;
+				const float pdy = ctx.nearestPickup->y - pin.selfPos.y;
+				if (std::fabs(pdx) < 0.8f) {
+					// ほぼ真上/真下 → 左右に振らない（符号反転の往復を防ぐ）。
+					if (pdy > 0.5f) {
+						// 上にある → ゆっくり寄りながらジャンプで段差を上る。
+						desiredMoveX = (pdx >= 0.0f ? 1.0f : -1.0f) * 0.35f;
+						if (jumpCooldown_ <= 0.0f) {
+							out.jumpTriggered = true;
+							jumpCooldown_ = kJumpInterval;
+						}
+					} else {
+						desiredMoveX = 0.0f; // もうほぼ乗っている（GameScene が拾わせる）
+					}
+				} else {
+					desiredMoveX = (pdx >= 0.0f) ? 1.0f : -1.0f;
+				}
 			}
 			break;
 		case State::Attack:
@@ -342,11 +377,24 @@ CharacterInput EnemyBrain::Think(const BrainContext& ctx) {
 					desiredMoveX = towardX;                   // 密着維持
 				}
 			} else {
-				if (p.distance < kTooClose) {
-					desiredMoveX = -towardX;                  // 近すぎるので少し引く
-				} else if (p.distance > kPreferredShootDist
+				// 学習: 近接で倒せる相手なら詰める / 遠距離で倒せる相手なら距離を保つ。
+				const float shootDist = prefersClose ? kMeleeRange * 2.0f
+					: (prefersRanged ? kPreferredShootDist + 3.0f : kPreferredShootDist);
+				const float backOff = prefersRanged ? kTooClose + 2.5f : kTooClose;
+				if (p.distance < backOff) {
+					desiredMoveX = -towardX;                  // 近すぎるので引く
+				} else if (p.distance > shootDist
 					|| (crouchCounter && p.distance > kMeleeRange * 1.5f)) {
-					desiredMoveX = towardX;                   // 撃ちながら間合いを詰める（攻撃的）
+					desiredMoveX = towardX;                   // 撃ちながら間合いを詰める
+				}
+				// 学習: プレイヤーを落としやすい向きへ押せる位置に回り込む。
+				//   弾のノックバックは「自分→相手」の向き。相手を pushDir へ飛ばすには
+				//   自分が相手の (-pushDir) 側にいればよい。逆側なら通り抜けを試みる。
+				if (pushDir != 0 && desiredMoveX == 0.0f) {
+					const float sideOfTarget = (pin.targetPos.x - pin.selfPos.x); // >0: 自分は相手の左
+					if (sideOfTarget * static_cast<float>(pushDir) < 0.0f) {
+						desiredMoveX = towardX; // 反対側にいる → 相手を越えて回り込む
+					}
 				}
 			}
 			break;
@@ -372,22 +420,26 @@ CharacterInput EnemyBrain::Think(const BrainContext& ctx) {
 		else if (hazR && !hazL) edgeBias = -1.0f;
 
 		if (edgeBias != 0.0f && desiredMoveX * edgeBias < 0.0f) {
-			// 移動意図が「相手へ詰める」方向なら、edge-bias では止めない。
-			// ナビ（後段の hardStop）が実際の崖の直前まで歩かせて止める＝相手に寄る動きになる。
-			const bool closingOnTarget =
-				(state_ == State::Approach || state_ == State::Attack)
-				&& (desiredMoveX * towardX > 0.0f);
-			if (!closingOnTarget) {
+			// 移動意図が崖側を向いている。
+			if (state_ == State::Retreat) {
+				// 逃げる方向が崖＝もう下がれない → 逃げるのをやめて反撃に転じる。
+				TransitionTo(State::Attack);
+				corneredHoldTimer_ = 2.5f; // しばらく Retreat へ戻らない（往復防止）
 				desiredMoveX = 0.0f;
 				edgeHeld = true;
-				if (!wantMelee && (state_ == State::Approach || state_ == State::Idle)) {
-					TransitionTo(State::Attack); // 崖で詰められない＋銃持ち → 撃つ体勢へ
+			} else {
+				// 「相手へ詰める」意図なら止めない（ナビの hardStop が崖ぎわで止める）。
+				const bool closingOnTarget =
+					(state_ == State::Approach || state_ == State::Attack)
+					&& (desiredMoveX * towardX > 0.0f);
+				if (!closingOnTarget) {
+					desiredMoveX = 0.0f;
+					edgeHeld = true;
+					if (!wantMelee && (state_ == State::Approach || state_ == State::Idle)) {
+						TransitionTo(State::Attack); // 崖で詰められない＋銃持ち → 撃つ体勢へ
+					}
 				}
 			}
-		}
-		// 退避中だけは、逃げ場が崖なら安全側へ切り返す。
-		if (edgeBias != 0.0f && state_ == State::Retreat) {
-			desiredMoveX = edgeBias;
 		}
 	}
 
@@ -462,6 +514,35 @@ CharacterInput EnemyBrain::Think(const BrainContext& ctx) {
 		jumpCooldown_ = kJumpInterval;
 	}
 
+	// ================= 学習: 飛来弾の回避 =================
+	// 1つの脅威につき1回だけ「避けられるか」を DodgeSkill で抽選する（序盤はほぼ避けない＝的）。
+	if (ctx.incomingThreat && ctx.threatTtc > 0.0f && ctx.threatTtc < 0.45f) {
+		if (!dodgeLatched_) {
+			dodgeLatched_ = true;
+			dodgeRoll_ = RandomGenerator::Instance().NextFloat01() < dodgeSkill;
+		}
+		if (dodgeRoll_) {
+			const float threatDy = ctx.threatPos.y - pin.selfPos.y;
+			if (threatDy > 0.4f) {
+				out.crouchHeld = true;               // 高い弾 → しゃがむ
+			} else if (jumpCooldown_ <= 0.0f) {
+				out.jumpTriggered = true;            // 低い／水平の弾 → 跳ぶ
+				jumpCooldown_ = kJumpInterval;
+			}
+			// 弾の進行方向と垂直に横ステップ（崖側でなければ）。
+			const float stepDir = (ctx.threatVel.x >= 0.0f) ? 1.0f : -1.0f; // 弾が進む向きへ流す
+			if (ctx.stage) {
+				const AINav::MoveHazard h = AINav::Probe(*ctx.stage, pin.selfPos, stepDir,
+					kFeetHalfY, kLookAhead, jumpGap, kAiMaxJumpUp, kMaxSafeDrop);
+				if (!h.edgeAhead && !(h.pitAhead && !h.jumpClears && !h.dropAhead)) {
+					desiredMoveX = stepDir;
+				}
+			}
+		}
+	} else {
+		dodgeLatched_ = false;
+	}
+
 	// ================= 破綻潰し: 壁ドン検知 =================
 	if (prevSelfValid_) {
 		const float movedX = std::fabs(pin.selfPos.x - prevSelfX_);
@@ -521,6 +602,24 @@ CharacterInput EnemyBrain::Think(const BrainContext& ctx) {
 		}
 	} else {
 		reactionTimer_ = reactionDelay;
+	}
+
+	// ================= 学習: 撃ちながらの横移動（スペーシング） =================
+	// 序盤(SpacingSkill≈0)は棒立ちで撃つ＝当てやすい的。上達すると左右に揺れて狙いにくくなる。
+	if (canAttackNow && !wantMelee && spacingSkill > 0.05f && std::fabs(out.moveX) < 0.3f) {
+		strafePhase_ += dt * (2.2f + 3.0f * spacingSkill);
+		float strafe = std::sin(strafePhase_) * spacingSkill * 0.7f;
+		const float sd = (strafe >= 0.0f) ? 1.0f : -1.0f;
+		if (ctx.stage) {
+			const AINav::MoveHazard h = AINav::Probe(*ctx.stage, pin.selfPos, sd,
+				kFeetHalfY, kLookAhead, jumpGap, kAiMaxJumpUp, kMaxSafeDrop);
+			if (h.edgeAhead || (h.pitAhead && !h.jumpClears && !h.dropAhead) || h.wallAhead) {
+				strafe = 0.0f; // 崖・壁側へは揺れない
+			}
+		}
+		out.moveX = strafe;
+	} else {
+		strafePhase_ = 0.0f;
 	}
 
 	// 武器投げ（成立フレームだけ）。投げると素手に戻り、次フレームから pickup を拾いに行く。

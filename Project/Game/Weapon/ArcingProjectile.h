@@ -50,8 +50,12 @@ public:
 	bool DiedOnTerrain() const { return diedOnTerrain_; }
 
 	Vector3 GetPosition() const { return position_; }
+	Vector3 GetVelocity() const { return { velocityX_, velocityY_, 0.0f }; }
 	float GetRadius() const { return radius_; }
 	float GetDamage() const { return damage_; }
+
+	/// <summary>発射／投擲した本人（AI が「自分に向かってくる弾か」を判定するのに使う）。</summary>
+	const Character* GetOwner() const { return owner_; }
 
 	/// <summary>
 	/// defender と実際に当たっているかを判定し、当たっていればダメージ・ノックバックを

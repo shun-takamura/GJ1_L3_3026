@@ -15,6 +15,13 @@ struct BrainContext {
 	const IStageQuery* stage = nullptr;
 	const PlayerModel* playerModel = nullptr;    // 反応速度・精度・対抗行動の元。null 可
 	const Vector3* nearestPickup = nullptr;      // 取得可能で最寄りの武器 pickup 座標。無ければ null
+
+	// 自分に向かってくる飛来物（回避判断用）。GameScene が算出。
+	bool incomingThreat = false;
+	Vector3 threatPos{};
+	Vector3 threatVel{};
+	float threatTtc = 0.0f; // 到達までの推定秒数
+
 	float dt = 0.0f;
 };
 
@@ -52,6 +59,13 @@ public:
 	State GetState() const { return state_; }
 	const char* GetStateName() const;
 	int GetFallCaution() const { return selfFallCount_; }
+
+	/// <summary>
+	/// 「届かない」と判断して一時的に避けている pickup の x（GameScene が候補選びで使う）。
+	/// active=false なら制限なし。
+	/// </summary>
+	struct PickupAvoid { bool active = false; float x = 0.0f; };
+	PickupAvoid GetPickupAvoid() const { return { pickupBlacklistTimer_ > 0.0f, pickupBlacklistX_ }; }
 
 	/// <summary>HUD で「なぜ止まっているか」を見るためのデバッグ値。</summary>
 	struct Debug {
@@ -164,7 +178,15 @@ private:
 
 	int selfFallCount_ = 0; // 場外落下で自滅した回数。ラウンドを跨いで蓄積（穴への慎重さ）
 
-	float frozenTimer_ = 0.0f; // 何も出力できていない時間。一定超で強制的に行動させる
+	float frozenTimer_ = 0.0f;        // 何も出力できていない時間。一定超で強制的に行動させる
+	float corneredHoldTimer_ = 0.0f;  // 追い詰められて反撃に転じた後、Retreat へ戻らない猶予
+
+	// 回避（1つの脅威につき1回だけ回避可否を抽選する）
+	bool dodgeLatched_ = false;
+	bool dodgeRoll_ = false;
+	// 撃ちながらの横移動
+	float strafePhase_ = 0.0f;
+
 	Debug dbg_;
 
 	void TransitionTo(State next);

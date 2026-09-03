@@ -284,18 +284,57 @@ void GameScene::Update() {
 
 	// 敵の意図は EnemyBrain が決める(入力デバイスは一切読まない)。
 	// 敵が素手のとき拾いに行けるよう、取得可能で最寄りの武器 pickup を渡す。
+	// 「真上の別プラットフォームにあって歩いても跳んでも届かない」もの、
+	// および敵 AI が「届かない」と判断して避けているものは候補から除く。
 	Vector3 nearestPickupPos{};
 	bool hasNearestPickup = false;
 	{
 		const Vector3 ep = enemy_->GetPosition();
+		const EnemyBrain::PickupAvoid avoid = enemyBrain_->GetPickupAvoid();
 		float best = 1e18f;
 		for (const auto& pk : pickups_) {
 			if (pk->IsTaken()) continue;
 			const Vector3 pp = pk->GetPosition();
 			const float ddx = pp.x - ep.x;
 			const float ddy = pp.y - ep.y;
+			if (ddy > 3.0f && std::fabs(ddx) < 1.5f) continue;               // 真上で届かない
+			if (avoid.active && std::fabs(pp.x - avoid.x) < 2.5f) continue;  // AI が諦めた場所
 			const float d2 = ddx * ddx + ddy * ddy;
 			if (d2 < best) { best = d2; nearestPickupPos = pp; hasNearestPickup = true; }
+		}
+	}
+
+	// 敵に向かって飛んでくる弾（プレイヤーが撃ったもの）を探す。回避判断に使う。
+	Vector3 threatPos{};
+	Vector3 threatVel{};
+	float threatTtc = 0.0f;
+	bool threatActive = false;
+	{
+		const Vector3 ep = enemy_->GetPosition();
+		float bestTtc = 1e9f;
+		for (const auto& obj : flyingObjects_) {
+			if (obj->IsDead() || obj->GetOwner() == enemy_.get()) {
+				continue; // 自分の弾は脅威じゃない
+			}
+			const Vector3 pp = obj->GetPosition();
+			const Vector3 pv = obj->GetVelocity();
+			const float dx = ep.x - pp.x;
+			if (dx * pv.x <= 0.0f || std::fabs(pv.x) < 1.0f) {
+				continue; // 敵の方へ向かっていない
+			}
+			const float ttc = dx / pv.x;
+			// 到達時点の弾の高さが敵の胴体あたりを通るか（ざっくり）。
+			const float yAtHit = pp.y + pv.y * ttc;
+			if (std::fabs(yAtHit - ep.y) > 1.6f) {
+				continue;
+			}
+			if (ttc < bestTtc) {
+				bestTtc = ttc;
+				threatPos = pp;
+				threatVel = pv;
+				threatTtc = ttc;
+				threatActive = true;
+			}
 		}
 	}
 
@@ -305,6 +344,10 @@ void GameScene::Update() {
 	brainCtx.stage = stage_.get();
 	brainCtx.playerModel = playerModel_.get();
 	brainCtx.nearestPickup = hasNearestPickup ? &nearestPickupPos : nullptr;
+	brainCtx.incomingThreat = threatActive;
+	brainCtx.threatPos = threatPos;
+	brainCtx.threatVel = threatVel;
+	brainCtx.threatTtc = threatTtc;
 	brainCtx.dt = dt;
 	const CharacterInput enemyInput = enemyBrain_->Think(brainCtx);
 
@@ -354,8 +397,19 @@ void GameScene::Update() {
 	// 本物の「10ポイント先取・次ステージへ自動遷移」といったラウンド進行はフェーズ5の別タスク。
 	// ここでは「テストを継続できること」を優先して、即座にリセットするだけにしている。
 	//===================================
-	// 敵がどうやられたか(場外の自滅か / HP0か)を、リセット前に記録しておく。
+	// 各キャラの「やられ方」を、リセット前に記録しておく。
 	const bool enemyWasOutOfBounds = IsOutOfBounds(enemy_->GetPosition());
+	const bool playerWasOutOfBounds = IsOutOfBounds(player_->GetPosition());
+	const bool playerWasCrouching = player_->IsCrouching();
+	const float playerDeathX = player_->GetPosition().x;
+	float pePairDist = 0.0f;
+	{
+		const Vector3 pp = player_->GetPosition();
+		const Vector3 pe = enemy_->GetPosition();
+		const float dx = pp.x - pe.x;
+		const float dy = pp.y - pe.y;
+		pePairDist = std::sqrt(dx * dx + dy * dy);
+	}
 
 	const bool koPlayer = CheckKnockoutAndReset(*player_, *enemy_, enemyPoints_, playerSpawn_, "Player");
 	const bool koEnemy = CheckKnockoutAndReset(*enemy_, *player_, playerPoints_, enemySpawn_, "Enemy");
@@ -367,6 +421,14 @@ void GameScene::Update() {
 		playerModel_->OnPointConceded();
 		// 場外での自滅なら「穴に慎重になる」学習も進める。
 		enemyBrain_->NotifyDeath(enemyWasOutOfBounds);
+	}
+	if (koPlayer) {
+		// プレイヤーが撃破/場外 = 敵が1点。倒し方の傾向を学習する。
+		PlayerModel::DefeatCause cause = playerWasOutOfBounds
+			? PlayerModel::DefeatCause::OutOfBounds
+			: (pePairDist < 2.5f ? PlayerModel::DefeatCause::Melee
+				: PlayerModel::DefeatCause::Ranged);
+		playerModel_->OnPlayerDefeated(cause, playerDeathX, playerWasCrouching);
 	}
 
 	//===================================
@@ -640,6 +702,16 @@ void GameScene::Draw() {
 			d.moveX, d.edgeBias, d.terrainBlocked ? 1 : 0, d.wantFetch ? 1 : 0,
 			d.blacklisted ? 1 : 0, d.pickupDist, d.frozen);
 		tr->DrawText(dbgLine, { 32.0f, 288.0f }, 0.7f);
+
+		char learnLine[192];
+		const int pushDir = playerModel_->PreferredPushDir();
+		snprintf(learnLine, sizeof(learnLine),
+			"Learned  Lead:%.2f Dodge:%.2f Spacing:%.2f | Push:%s Close:%d Ranged:%d",
+			playerModel_->LeadFactor(), playerModel_->DodgeSkill(), playerModel_->SpacingSkill(),
+			pushDir > 0 ? "R" : (pushDir < 0 ? "L" : "-"),
+			playerModel_->PrefersCloseCombat() ? 1 : 0,
+			playerModel_->PrefersRangedKeepaway() ? 1 : 0);
+		tr->DrawText(learnLine, { 32.0f, 316.0f }, 0.7f);
 
 		// 装備中の武器名と残弾(素手など弾の概念が無い武器は kInfiniteAmmo なので数値を出さない)。
 		char weaponLine[128];
