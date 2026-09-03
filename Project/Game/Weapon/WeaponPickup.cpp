@@ -25,6 +25,14 @@ void WeaponPickup::Finalize() {
 	visual_.reset();
 }
 
+void WeaponPickup::Update() {
+	// 位置自体は動かないが、カメラが動く(デバッグカメラ等)場合にも正しく描画されるよう、
+	// 毎フレーム WVP を再計算させておく(Character/StageGrid::Tile と同じ考え方)。
+	if (visual_) {
+		visual_->Update();
+	}
+}
+
 void WeaponPickup::Draw() {
 	if (visual_ && weapon_) {
 		visual_->Draw();

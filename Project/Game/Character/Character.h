@@ -171,10 +171,15 @@ public:
 
 	/// <summary>
 	/// このキャラが直前の Update() で武器を投げ捨てていれば true を返し、投げた物の
-	/// 初期条件(位置・初速・ダメージ等)を outSpawn に詰める。呼ばれた時点で装備は
-	/// 既に素手に戻っている。素手のときに throwTriggered が来ても何も起きない。
+	/// 初期条件(位置・初速・ダメージ等)を outSpawn に、投げた武器そのもの(残弾込み)を
+	/// outWeapon に詰める。呼ばれた時点で装備は既に素手に戻っている。
+	/// 素手のときに throwTriggered が来ても何も起きない。
+	///
+	/// outWeapon を渡す理由: 残弾が残っている武器を投げた場合、着弾しても消えずに
+	/// その場に WeaponPickup として再配置できるようにするため(GameScene 側の責務)。
+	/// 残弾0の武器は GameScene 側で「拾えるものを残さず消す」判断に使われる。
 	/// </summary>
-	bool ConsumePendingThrow(ProjectileSpawnRequest& outSpawn);
+	bool ConsumePendingThrow(ProjectileSpawnRequest& outSpawn, std::unique_ptr<Weapon>& outWeapon);
 
 	//====================
 	// IImGuiEditable(エンジン側の Hierarchy / Inspector / CollisionSystem への登録に使われる)
@@ -251,4 +256,5 @@ private:
 	std::vector<ProjectileSpawnRequest> pendingProjectileSpawns_; // 今フレーム発射が成立した弾のリクエスト(ショットガンは複数)
 	bool hasPendingThrow_ = false;        // 今フレーム投げ捨てが成立し、ConsumePendingThrow待ちか
 	ProjectileSpawnRequest pendingThrow_{}; // hasPendingThrow_ が true のときだけ有効な内容
+	std::unique_ptr<Weapon> pendingThrowWeapon_; // 投げた武器そのもの(残弾を保持)。hasPendingThrow_ が true のときだけ有効
 };

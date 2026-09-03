@@ -201,8 +201,10 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 
 	// ---- 投げ捨て ----
 	// 素手(CanBeThrown() == false)のときは何も起きない。投げた瞬間に装備は素手へ戻る。
-	// 投げた武器の中身(残弾等)は問わない ── ダメージ・ノックバックは kThrow* の固定値を使う
-	// (「弾切れの銃でも投げれば同じ威力」という仕様。Weapon.h 側の反動とは無関係の別パラメータ)。
+	// 命中時のダメージ・ノックバックは武器の種類に関わらず kThrow* の固定値を使う
+	// (「弾切れの銃を投げても同じ威力」という仕様。Weapon.h 側の反動とは無関係の別パラメータ)。
+	// ただし武器の実体(残弾を含む)は捨てずに pendingThrowWeapon_ で持ち運ぶ ── 着弾しても
+	// 残弾が残っていればその場に落ちて拾い直せる(GameScene::UpdateFlyingObjects 側の判断)。
 	if (throwTriggered && equippedWeapon_->CanBeThrown()) {
 		// 投げる位置は自分の中心から照準方向へ少し離す(自分自身に当たらないようにするため)。
 		pendingThrow_.origin = { position_.x + aimDirX_ * kThrowForwardOffset, position_.y + aimDirY_ * kThrowForwardOffset, position_.z };
@@ -216,8 +218,10 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 		pendingThrow_.damage = kThrowDamage;             // 命中時のダメージ(投げ武器固定値)
 		pendingThrow_.knockbackPower = kThrowKnockbackPower;
 		hasPendingThrow_ = true; // GameScene が ConsumePendingThrow() で回収し、実体(ArcingProjectile)を生成する
-		// 今の武器は GameScene 側で使い捨ての飛翔体になる(拾い直せる物として地面に残ることはない)ので、
-		// ここで所有権を手放し、素手に持ち替える。
+		// 今の武器の所有権を pendingThrowWeapon_ へ移し(=equippedWeapon_ は空になる)、
+		// 代わりに新しい素手を装備する。武器本体を捨てずに持ち運ぶのは、GameScene が
+		// 着弾後に残弾を見て「地面に残すかどうか」を判断できるようにするため。
+		pendingThrowWeapon_ = std::move(equippedWeapon_);
 		equippedWeapon_ = std::make_unique<UnarmedWeapon>();
 	}
 
@@ -311,11 +315,12 @@ bool Character::ConsumePendingProjectileSpawns(std::vector<ProjectileSpawnReques
 	return true;
 }
 
-bool Character::ConsumePendingThrow(ProjectileSpawnRequest& outSpawn) {
+bool Character::ConsumePendingThrow(ProjectileSpawnRequest& outSpawn, std::unique_ptr<Weapon>& outWeapon) {
 	if (!hasPendingThrow_) {
 		return false;
 	}
 	outSpawn = pendingThrow_;
+	outWeapon = std::move(pendingThrowWeapon_); // 残弾を保持したまま武器本体の所有権を渡す
 	hasPendingThrow_ = false; // 1回取り出したら消費済み。次に投げるまで false のまま
 	return true;
 }
@@ -349,6 +354,7 @@ void Character::ResetForNewRound(const Vector3& spawnPos) {
 	hasPendingAttack_ = false;
 	pendingProjectileSpawns_.clear();
 	hasPendingThrow_ = false;
+	pendingThrowWeapon_.reset(); // 消費されなかった投げ武器が万一残っていても、ここで確実に手放す
 	damageFlashTimer_ = 0.0f;
 
 	if (visual_) {

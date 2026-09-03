@@ -126,7 +126,7 @@ private:
 	bool IsOutOfBounds(const Vector3& pos) const;
 
 	//====================
-	// 武器・弾(フェーズ2)
+	// 武器・弾
 	//====================
 
 	/// <summary>
@@ -136,9 +136,15 @@ private:
 	/// </summary>
 	void SpawnFromCharacter(Character& shooter);
 
-	/// <summary>flyingObjects_ を1つ生成して積む共通処理。</summary>
+	/// <summary>
+	/// flyingObjects_ を1つ生成して積む共通処理。
+	/// thrownWeaponPayload が非null(=投げ武器)の場合、着弾時に GameScene 側で
+	/// 残弾を見て WeaponPickup として地面に残すかどうかを判断する(UpdateFlyingObjects 参照)。
+	/// 銃弾を生成する場合は nullptr のままでよい。
+	/// </summary>
 	void SpawnFlyingObject(const ProjectileSpawnRequest& spec, Character* owner,
-		PrimitiveInstance::PrimitiveType visualType, const Vector3& visualScale, const char* name);
+		PrimitiveInstance::PrimitiveType visualType, const Vector3& visualScale, const char* name,
+		std::unique_ptr<Weapon> thrownWeaponPayload = nullptr);
 
 	/// <summary>
 	/// flyingObjects_ を全て更新し、生きているものは相手キャラとの命中判定を取る。
