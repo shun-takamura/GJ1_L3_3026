@@ -121,6 +121,11 @@ public:
 	float GetMaxHP() const { return kMaxHP; }
 	bool IsDead() const { return hp_ <= 0.0f; }
 
+	/// <summary>接地しているか。AI の学習(プレイヤーのジャンプ頻度計測)用に公開。</summary>
+	bool IsGrounded() const { return grounded_; }
+	/// <summary>しゃがみ中か。AI の学習(しゃがみ回避の癖の計測)用に公開。</summary>
+	bool IsCrouching() const { return isCrouching_; }
+
 	/// <summary>
 	/// HPを全回復し、ノックバック速度や落下速度もクリアして spawnPos へ再配置する。
 	/// あくまで「その場でテストを続けられるようにするための仮リセット」であり、
@@ -193,8 +198,8 @@ private:
 	//====================
 	static constexpr float kMaxHP = 100.0f;
 	static constexpr float kMoveSpeed = 6.0f;             // 左右移動の速さ(units/秒)
-	static constexpr float kGravity = -20.0f;             // 重力加速度(下向きなので負の値)
-	static constexpr float kJumpSpeed = 8.0f;             // ジャンプ開始時の上向き初速
+	static constexpr float kGravity = -26.0f;             // 重力加速度(下向きなので負の値)
+	static constexpr float kJumpSpeed = 11.0f;             // ジャンプ開始時の上向き初速
 	static constexpr float kRestHeight = 0.9f;            // 接地時の position_.y (ボックスの中心の高さ。床が y=0 の前提)
 	static constexpr float kCapsuleRadius = 0.45f;        // 当たり判定カプセルの半径
 	static constexpr float kCapsuleHeight = 0.9f;         // 当たり判定カプセルの円柱部分の高さ(両端の半球は含まない)

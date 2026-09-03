@@ -265,6 +265,45 @@ bool StageGrid::OverlapsSolid(const Vector3& center, const Vector3& half) const 
 	return false;
 }
 
+bool StageGrid::SegmentHitsSolid(const Vector3& a, const Vector3& b) const {
+	// 線分を CellSize の半分ぶんずつサンプリングして、solid セルを踏んでいないか調べる。
+	// 射線チェック用途なので、DDA のような厳密なグリッド走査までは要らない（1マス未満の
+	// すり抜けは実用上問題にならない）。
+	const float dx = b.x - a.x;
+	const float dy = b.y - a.y;
+	const float len = std::sqrt(dx * dx + dy * dy);
+	if (len < 1e-4f) {
+		int cx, cy;
+		WorldToCell(a, cx, cy);
+		return IsSolidCell(cx, cy);
+	}
+	const float step = kCellSize * 0.5f;
+	const int steps = static_cast<int>(len / step) + 1;
+	for (int i = 0; i <= steps; ++i) {
+		const float t = static_cast<float>(i) / static_cast<float>(steps);
+		const Vector3 p{ a.x + dx * t, a.y + dy * t, 0.0f };
+		int cx, cy;
+		WorldToCell(p, cx, cy);
+		if (IsSolidCell(cx, cy)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool StageGrid::IsPrecariousBreakableFloor(const Vector3& pos) const {
+	// pos の足元は「キャラ中心の1マス下」あたり。そこが壊れる床で、
+	// さらにその下（2マス下）に何も無ければ、撃たれると落下する危うい足場。
+	int cx, cy;
+	WorldToCell(pos, cx, cy);
+	const int belowY = cy + 1;      // ワールドで下（WorldToCell は y 下ほど cy 大）
+	const int below2Y = cy + 2;
+	if (!IsBreakableCell(cx, belowY)) {
+		return false;
+	}
+	return !IsSolidCell(cx, below2Y);
+}
+
 StageMoveResult StageGrid::MoveAabb(const Vector3& from, const Vector3& to, const Vector3& half) const {
 	StageMoveResult result;
 	Vector3 pos = from;
