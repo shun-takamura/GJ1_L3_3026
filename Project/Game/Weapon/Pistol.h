@@ -14,6 +14,8 @@ public:
 	float GetRecoilPower() const override { return kRecoilPower; }
 	std::string GetName() const override { return "Pistol"; }
 	int GetRemainingAmmo() const override { return ammo_; }
+	std::string GetModelDirectory() const override { return "Resources/Models/Pistol"; }
+	std::string GetModelFileName() const override { return "Pistol.mesh"; }
 
 private:
 	static constexpr int   kStartingAmmo = 12;

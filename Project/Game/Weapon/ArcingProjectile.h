@@ -10,6 +10,7 @@
 class Camera;
 class IStageQuery;
 class Character;
+class Weapon;
 
 /// <summary>
 /// 銃弾・投げ捨てた武器に共通する「初速+重力で放物線を飛び、キャラに当たるか
@@ -24,6 +25,10 @@ class Character;
 /// 位置を積分するが、これは Character 同士の「押し合い」用の Capsule コライダーとは
 /// 無関係な、GameScene が明示的に Update/命中判定を呼ぶだけの軽量な実体
 /// (06_Collision.md が言う「CollisionSystem の総当たりに乗せない」パターン)。
+///
+/// 見た目はプリミティブ固定(Object3DInstance で実際の武器モデルを表示する試みを
+/// 一度行ったが、Object3D描画パイプラインの配線でGPUハング(TDR)を起こす未解決の
+/// 問題があり、いったん見送っている)。
 /// </summary>
 class ArcingProjectile {
 public:
@@ -64,6 +69,16 @@ public:
 	/// </summary>
 	void TryHitCharacter(Character& defender);
 
+	/// <summary>
+	/// 投げ捨てられた武器そのものを積み荷として持たせる(銃弾用途では呼ばなくてよい)。
+	/// 着弾・命中で消滅したあと、GameScene が TakeThrownWeaponPayload() で回収し、
+	/// 残弾が残っていればその場に WeaponPickup として再配置する(0発ならそのまま失われる)。
+	/// </summary>
+	void SetThrownWeaponPayload(std::unique_ptr<Weapon> weapon);
+
+	/// <summary>積み荷の所有権を呼び出し側へ渡す(積み荷が無ければ nullptr)。一度取り出すと空になる。</summary>
+	std::unique_ptr<Weapon> TakeThrownWeaponPayload();
+
 private:
 	Camera* camera_ = nullptr;
 	const IStageQuery* stage_ = nullptr;
@@ -79,5 +94,11 @@ private:
 	float damage_ = 0.0f;
 	float knockbackPower_ = 0.0f;
 	bool dead_ = false;
+  
+	// 投げた武器そのもの。銃弾(Weapon::TryRangedAttack 由来)では常に nullptr。
+	// 投げ武器(Character::ConsumePendingThrow 由来)では、残弾があとで拾い直せるよう
+	// 消滅するまでここで所有権を持ち続ける。
+	std::unique_ptr<Weapon> thrownWeaponPayload_;
+
 	bool diedOnTerrain_ = false; // 地形/場外で消えたか（キャラ命中・寿命切れと区別する）
 };

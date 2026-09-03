@@ -388,6 +388,9 @@ void GameScene::Update() {
 	//===================================
 	// 武器拾得・ランダムスポーン
 	//===================================
+	for (auto& pickup : pickups_) {
+		pickup->Update(); // 位置は動かないが、WVP計算のため毎フレーム呼ぶ必要がある
+	}
 	TryPickUpWeapon(*player_);
 	TryPickUpWeapon(*enemy_);
 	UpdateWeaponSpawner(dt);
@@ -548,19 +551,28 @@ void GameScene::SpawnFromCharacter(Character& shooter) {
 	}
 
 	// 武器を投げ捨てていれば、見た目が銃弾よりひと回り大きい箱として生成する。
+	// 投げた武器の実体(残弾込み)も一緒に運ばせる ── 着弾後、残弾が残っていれば
+	// UpdateFlyingObjects 側でその場に WeaponPickup として再配置するため。
 	ProjectileSpawnRequest throwSpawn;
-	if (shooter.ConsumePendingThrow(throwSpawn)) {
+	std::unique_ptr<Weapon> thrownWeapon;
+	if (shooter.ConsumePendingThrow(throwSpawn, thrownWeapon)) {
 		SpawnFlyingObject(throwSpawn, &shooter, PrimitiveInstance::PrimitiveType::Box,
-			{ 0.4f, 0.4f, 0.4f }, "ThrownWeapon");
+			{ 0.4f, 0.4f, 0.4f }, "ThrownWeapon", std::move(thrownWeapon));
 	}
 }
 
 void GameScene::SpawnFlyingObject(const ProjectileSpawnRequest& spec, Character* owner,
-	PrimitiveInstance::PrimitiveType visualType, const Vector3& visualScale, const char* name) {
+	PrimitiveInstance::PrimitiveType visualType, const Vector3& visualScale, const char* name,
+	std::unique_ptr<Weapon> thrownWeaponPayload) {
 	// 銃弾・投げ武器どちらも ArcingProjectile 1つで表現しているので(クラス冒頭コメント参照)、
 	// 見た目(visualType/visualScale)以外はここで分岐する必要が無い。
+	// (実際の武器モデルを表示する Object3DInstance 版を試したが、Object3D描画パイプラインの
+	// 配線でGPUハング(TDR)を起こす未解決の問題がありプリミティブ表示に戻している)
 	auto obj = std::make_unique<ArcingProjectile>();
 	obj->Initialize(camera_.get(), name, spec, owner, stage_.get(), visualType, visualScale);
+	if (thrownWeaponPayload) {
+		obj->SetThrownWeaponPayload(std::move(thrownWeaponPayload));
+	}
 	flyingObjects_.push_back(std::move(obj));
 }
 
@@ -578,6 +590,22 @@ void GameScene::UpdateFlyingObjects(float dt) {
 		// 発射者自身には ArcingProjectile::TryHitCharacter 内で当たらないようになっている。
 		obj->TryHitCharacter(*player_);
 		obj->TryHitCharacter(*enemy_);
+	}
+
+	// 消滅した物のうち、投げた武器の積み荷(残弾込み)を持っているものは、
+	// リストから取り除く前に中身を確認する。残弾が残っていればその場に
+	// WeaponPickup として再配置し、また拾えるようにする(残弾0ならそのまま何も残さず失う)。
+	for (auto& obj : flyingObjects_) {
+		if (!obj->IsDead()) {
+			continue;
+		}
+		std::unique_ptr<Weapon> droppedWeapon = obj->TakeThrownWeaponPayload();
+		if (droppedWeapon && droppedWeapon->GetRemainingAmmo() > 0) {
+			auto pickup = std::make_unique<WeaponPickup>();
+			pickup->Initialize(camera_.get(), obj->GetPosition(), std::move(droppedWeapon));
+			pickups_.push_back(std::move(pickup));
+		}
+		// droppedWeapon が nullptr(銃弾だった)か残弾0の場合は、ここでスコープを抜けて破棄される。
 	}
 
 	// 消滅した物をリストから取り除く。

@@ -62,5 +62,13 @@ public:
 	/// <summary>HUD表示用の残弾数。弾の概念が無い武器(素手など)は kInfiniteAmmo を返す。</summary>
 	virtual int GetRemainingAmmo() const { return kInfiniteAmmo; }
 
+	/// <summary>読み込み先ディレクトリ("Resources/Models/Pistol" 等)。拾える状態(WeaponPickup)・
+	/// 投げた状態(ArcingProjectile)で表示する3Dモデルの場所。素手(UnarmedWeapon)のように
+	/// モデルを持たない武器は空文字のままでよい(呼び出し側は空文字ならプリミティブ等へフォールバックする)。</summary>
+	virtual std::string GetModelDirectory() const { return ""; }
+
+	/// <summary>読み込むメッシュファイル名("Pistol.mesh" 等)。GetModelDirectory() が空なら意味を持たない。</summary>
+	virtual std::string GetModelFileName() const { return ""; }
+
 	static constexpr int kInfiniteAmmo = -1;
 };

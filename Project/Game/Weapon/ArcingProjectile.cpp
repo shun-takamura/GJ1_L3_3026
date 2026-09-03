@@ -3,6 +3,7 @@
 #include "Camera.h"
 #include "Character/Character.h"
 #include "Common/IStageQuery.h"
+#include "Weapon.h"
 
 namespace {
 	// Character::kGravity と同じ値。世界の重力を1箇所にまとめられないか迷ったが、
@@ -102,4 +103,12 @@ void ArcingProjectile::TryHitCharacter(Character& defender) {
 	if (defender.ReceiveHit(hitbox)) {
 		dead_ = true; // 命中したので消える(貫通はしない)
 	}
+}
+
+void ArcingProjectile::SetThrownWeaponPayload(std::unique_ptr<Weapon> weapon) {
+	thrownWeaponPayload_ = std::move(weapon);
+}
+
+std::unique_ptr<Weapon> ArcingProjectile::TakeThrownWeaponPayload() {
+	return std::move(thrownWeaponPayload_);
 }
