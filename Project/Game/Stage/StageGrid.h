@@ -81,6 +81,7 @@ public:
 	bool  IsPointInsideBounds(const Vector3& p) const override;
 	bool  OverlapsSolid(const Vector3& center, const Vector3& half) const override;
 	StageMoveResult MoveAabb(const Vector3& from, const Vector3& to, const Vector3& half) const override;
+	bool  SegmentHitsSolid(const Vector3& a, const Vector3& b) const override;
 
 private:
 	struct Tile {

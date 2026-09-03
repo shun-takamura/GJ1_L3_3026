@@ -11,6 +11,9 @@
 #include "Stage/StageGrid.h"
 #include "Weapon/ArcingProjectile.h"
 #include "Weapon/WeaponPickup.h"
+#include "AI/EnemyBrain.h"
+#include "AI/PlayerModel.h"
+#include "Common/CharacterInput.h"
 
 /// <summary>
 /// ゲーム本編の雛形(フェーズ1: 触れる最小プロトタイプ)。
@@ -18,8 +21,7 @@
 /// Stick Fight 系の横視点アクション。カメラは真横遠目の固定視点、
 /// キャラの移動は X-Y 平面のみ(奥行き Z は常に固定。両キャラとも Z=0 に置いている)。
 ///
-/// 操作キャラ(player_)と、殴る的として静止した dummy_ を1体置いてある
-/// (対戦相手のAIはフェーズ4の別タスクなので、フェーズ1では「静止した的」で代用している)。
+/// 操作キャラ(player_)と、EnemyBrain が動かす敵(enemy_)を1体ずつ置いている。
 ///
 /// このクラスの役割分担(Character.h の設計コメントと対になっている):
 ///   - Character 自身は「入力デバイス」も「相手が誰か」も「アリーナの形状」も知らない。
@@ -50,9 +52,16 @@ private:
 
 	std::unique_ptr<Camera> camera_;
 
-	// 操作キャラ / 殴る的(dummyは動かない。AIが入るまでの仮の対戦相手役)
+	// 操作キャラ / 敵キャラ。敵の行動は enemyBrain_ が CharacterInput として決める
+	// (Character 側はプレイヤーと敵を区別しない。Character.h の設計コメント参照)。
 	std::unique_ptr<Character> player_;
-	std::unique_ptr<Character> dummy_;
+	std::unique_ptr<Character> enemy_;
+
+	// 敵 AI の思考と、プレイヤー行動の学習モデル。
+	// turretMode=true にすると敵は「その場で撃つだけの的」に落ちる(Day4 撤退ライン)。
+	static constexpr bool kEnemyTurretMode = false;
+	std::unique_ptr<EnemyBrain> enemyBrain_;
+	std::unique_ptr<PlayerModel> playerModel_;
 
 	// ステージ(CSV から生成)。場外判定・地形当たり判定はここへ委譲する。
 	std::unique_ptr<StageGrid> stage_;
@@ -63,7 +72,7 @@ private:
 
 	// 仮の得点(HP0 or 場外で+1)。本物のポイント管理・10本先取判定はフェーズ5
 	int playerPoints_ = 0;
-	int dummyPoints_ = 0;
+	int enemyPoints_ = 0;
 
 	// 秒間隔でステージにランダムな武器を1つ湧かせるまでのカウントダウン。
 	static constexpr float kWeaponSpawnInterval = 8.0f;
@@ -119,7 +128,8 @@ private:
 	/// <param name="otherPoints">other 側の得点カウンタへの参照(加算する)</param>
 	/// <param name="targetRespawn">target をリセットするときの再配置先</param>
 	/// <param name="targetLabel">ログ表示用のラベル("Player"等)</param>
-	void CheckKnockoutAndReset(Character& target, Character& other,
+	/// <returns>この呼び出しで撃破/場外が発生し、リセットを行ったか。</returns>
+	bool CheckKnockoutAndReset(Character& target, Character& other,
 		int& otherPoints, const Vector3& targetRespawn, const char* targetLabel);
 
 	/// <summary>アリーナの左右境界(kArenaHalfExtentX)の外に出ているか。</summary>

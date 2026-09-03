@@ -265,6 +265,32 @@ bool StageGrid::OverlapsSolid(const Vector3& center, const Vector3& half) const 
 	return false;
 }
 
+bool StageGrid::SegmentHitsSolid(const Vector3& a, const Vector3& b) const {
+	// 線分を CellSize の半分ぶんずつサンプリングして、solid セルを踏んでいないか調べる。
+	// 射線チェック用途なので、DDA のような厳密なグリッド走査までは要らない（1マス未満の
+	// すり抜けは実用上問題にならない）。
+	const float dx = b.x - a.x;
+	const float dy = b.y - a.y;
+	const float len = std::sqrt(dx * dx + dy * dy);
+	if (len < 1e-4f) {
+		int cx, cy;
+		WorldToCell(a, cx, cy);
+		return IsSolidCell(cx, cy);
+	}
+	const float step = kCellSize * 0.5f;
+	const int steps = static_cast<int>(len / step) + 1;
+	for (int i = 0; i <= steps; ++i) {
+		const float t = static_cast<float>(i) / static_cast<float>(steps);
+		const Vector3 p{ a.x + dx * t, a.y + dy * t, 0.0f };
+		int cx, cy;
+		WorldToCell(p, cx, cy);
+		if (IsSolidCell(cx, cy)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 StageMoveResult StageGrid::MoveAabb(const Vector3& from, const Vector3& to, const Vector3& half) const {
 	StageMoveResult result;
 	Vector3 pos = from;

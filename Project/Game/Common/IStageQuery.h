@@ -42,4 +42,11 @@ public:
 	/// </summary>
 	virtual StageMoveResult MoveAabb(const Vector3& from, const Vector3& to,
 		const Vector3& half) const = 0;
+
+	/// <summary>
+	/// 線分 a→b の途中に solid セル（壊れない床・壊れる床）が有るか。
+	/// AI の射線チェック（相手が地形に隠れて撃てないかの判定）に使う。
+	/// ※ IStageQuery 正式版の凍結対象に含める（B の LOS 判定でも必要になる想定）。
+	/// </summary>
+	virtual bool SegmentHitsSolid(const Vector3& a, const Vector3& b) const = 0;
 };

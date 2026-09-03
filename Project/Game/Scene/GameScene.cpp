@@ -149,8 +149,7 @@ void GameScene::Initialize() {
 
 	//===================================
 	// キャラクター
-	// player_ は操作キャラ、dummy_ は殴る練習台(静止したまま動かない)。
-	// 本物の対戦AIはフェーズ4の別タスクなので、今は dummy_ で代用している。
+	// player_ は操作キャラ、enemy_ は敵キャラ(行動は enemyBrain_ が決める)。
 	// どちらも Z=0 の同じ奥行きに置く(横視点なので全キャラ同じZ平面上にいる想定)。
 	// スポーン座標と地形当たり判定はステージへ委譲する。
 	//===================================
@@ -164,19 +163,27 @@ void GameScene::Initialize() {
 	player_->Initialize(camera_.get(), "Player", playerSpawn_);
 	player_->SetStage(stage_.get());
 
-	dummy_ = std::make_unique<Character>();
-	dummy_->Initialize(camera_.get(), "Dummy", enemySpawn_);
-	dummy_->SetStage(stage_.get());
+	enemy_ = std::make_unique<Character>();
+	enemy_->Initialize(camera_.get(), "Enemy", enemySpawn_);
+	enemy_->SetStage(stage_.get());
+
+	// 敵 AI と学習モデル。GameScene は Think() の結果を Character へ渡すだけ。
+	enemyBrain_ = std::make_unique<EnemyBrain>();
+	enemyBrain_->Initialize(kEnemyTurretMode);
+	playerModel_ = std::make_unique<PlayerModel>();
+	playerModel_->Reset();
 
 	playerPoints_ = 0;
-	dummyPoints_ = 0;
+	enemyPoints_ = 0;
 }
 
 void GameScene::Finalize() {
 	// 依存関係はないが、生成順と逆順に破棄する(可読性のための慣習)。
 	pickups_.clear();
 	flyingObjects_.clear();
-	dummy_.reset();
+	playerModel_.reset();
+	enemyBrain_.reset();
+	enemy_.reset();
 	player_.reset();
 	stage_.reset();
 	camera_.reset();
@@ -263,9 +270,36 @@ void GameScene::Update() {
 
 	stage_->Update();
 
-	player_->Update(dt, moveX, jumpTriggered, crouchHeld, aimDir.x, aimDir.y, attackTriggered, attackHeld, throwTriggered);
-	// 的は入力なしで呼ぶだけ(重力等の物理更新は必要なので Update 自体は呼ぶ)。照準は右向き固定。
-	dummy_->Update(dt, 0.0f, false, false, 1.0f, 0.0f, false, false, false);
+	// デバイスから読んだ生の状態を、解決済みの意図(CharacterInput)にまとめる。
+	// プレイヤーも敵 AI も、ここから先は同じ CharacterInput 経由で Character を動かす。
+	CharacterInput playerInput;
+	playerInput.moveX = moveX;
+	playerInput.jumpTriggered = jumpTriggered;
+	playerInput.crouchHeld = crouchHeld;
+	playerInput.aimDirX = aimDir.x;
+	playerInput.aimDirY = aimDir.y;
+	playerInput.attackTriggered = attackTriggered;
+	playerInput.attackHeld = attackHeld;
+	playerInput.throwTriggered = throwTriggered;
+
+	// 敵の意図は EnemyBrain が決める(入力デバイスは一切読まない)。
+	BrainContext brainCtx;
+	brainCtx.self = enemy_.get();
+	brainCtx.target = player_.get();
+	brainCtx.stage = stage_.get();
+	brainCtx.playerModel = playerModel_.get();
+	brainCtx.dt = dt;
+	const CharacterInput enemyInput = enemyBrain_->Think(brainCtx);
+
+	player_->Update(dt, playerInput.moveX, playerInput.jumpTriggered, playerInput.crouchHeld,
+		playerInput.aimDirX, playerInput.aimDirY, playerInput.attackTriggered,
+		playerInput.attackHeld, playerInput.throwTriggered);
+	enemy_->Update(dt, enemyInput.moveX, enemyInput.jumpTriggered, enemyInput.crouchHeld,
+		enemyInput.aimDirX, enemyInput.aimDirY, enemyInput.attackTriggered,
+		enemyInput.attackHeld, enemyInput.throwTriggered);
+
+	// プレイヤーの行動を観測(ポイントを取られるたびに敵が強くなるための土台)。
+	playerModel_->Observe(*player_, *enemy_, dt);
 
 	//===================================
 	// 当たり判定
@@ -281,21 +315,21 @@ void GameScene::Update() {
 	// CollisionSystem の毎フレーム総当たりには乗せず、両者ぶん明示的に ResolveAttack を呼ぶ。
 	// 攻撃は「一瞬だけ判定が必要」なもので、常時判定する仕組みに乗せる必要がないため。
 	//===================================
-	ResolveAttack(*player_, *dummy_, "Player");
-	ResolveAttack(*dummy_, *player_, "Dummy");
+	ResolveAttack(*player_, *enemy_, "Player");
+	ResolveAttack(*enemy_, *player_, "Enemy");
 
 	//===================================
 	// 銃弾・投げ捨てた武器の生成 → 更新・命中判定
 	//===================================
 	SpawnFromCharacter(*player_);
-	SpawnFromCharacter(*dummy_);
+	SpawnFromCharacter(*enemy_);
 	UpdateFlyingObjects(dt);
 
 	//===================================
 	// 武器拾得・ランダムスポーン
 	//===================================
 	TryPickUpWeapon(*player_);
-	TryPickUpWeapon(*dummy_);
+	TryPickUpWeapon(*enemy_);
 	UpdateWeaponSpawner(dt);
 
 	//===================================
@@ -303,8 +337,15 @@ void GameScene::Update() {
 	// 本物の「10ポイント先取・次ステージへ自動遷移」といったラウンド進行はフェーズ5の別タスク。
 	// ここでは「テストを継続できること」を優先して、即座にリセットするだけにしている。
 	//===================================
-	CheckKnockoutAndReset(*player_, *dummy_, dummyPoints_, playerSpawn_, "Player");
-	CheckKnockoutAndReset(*dummy_, *player_, playerPoints_, enemySpawn_, "Dummy");
+	const bool koPlayer = CheckKnockoutAndReset(*player_, *enemy_, enemyPoints_, playerSpawn_, "Player");
+	const bool koEnemy = CheckKnockoutAndReset(*enemy_, *player_, playerPoints_, enemySpawn_, "Enemy");
+	if (koPlayer || koEnemy) {
+		enemyBrain_->ResetForNewRound();
+	}
+	if (koEnemy) {
+		// 敵が撃破/場外 = プレイヤーが1点。ここで敵が「学習」して強くなる。
+		playerModel_->OnPointConceded();
+	}
 
 	//===================================
 	// デバッグ表示の残り時間を進める(実際の描画は Draw() 側)
@@ -358,12 +399,12 @@ bool GameScene::IsOutOfBounds(const Vector3& pos) const {
 	return !stage_ || !stage_->IsPointInsideBounds(pos);
 }
 
-void GameScene::CheckKnockoutAndReset(Character& target, Character& other,
+bool GameScene::CheckKnockoutAndReset(Character& target, Character& other,
 	int& otherPoints, const Vector3& targetRespawn, const char* targetLabel) {
 
 	// target が生きていて、かつ場内にいるなら何も起きていない
 	if (!target.IsDead() && !IsOutOfBounds(target.GetPosition())) {
-		return;
+		return false;
 	}
 
 	// ここに来た = target がHP0になったか、アリーナ外に出た(=やられた)
@@ -380,6 +421,7 @@ void GameScene::CheckKnockoutAndReset(Character& target, Character& other,
 	if (stage_) {
 		stage_->ResetTerrain();
 	}
+	return true;
 }
 
 void GameScene::AddDebugFlash(const Vector3& pos, float radius, const Vector4& color, float duration) {
@@ -446,7 +488,7 @@ void GameScene::UpdateFlyingObjects(float dt) {
 		}
 		// 発射者自身には ArcingProjectile::TryHitCharacter 内で当たらないようになっている。
 		obj->TryHitCharacter(*player_);
-		obj->TryHitCharacter(*dummy_);
+		obj->TryHitCharacter(*enemy_);
 	}
 
 	// 消滅した物をリストから取り除く。
@@ -512,7 +554,7 @@ void GameScene::UpdateWeaponSpawner(float dt) {
 void GameScene::Draw() {
 	if (stage_) stage_->Draw();
 	if (player_) player_->Draw();
-	if (dummy_) dummy_->Draw();
+	if (enemy_) enemy_->Draw();
 	for (auto& pickup : pickups_) {
 		pickup->Draw();
 	}
@@ -543,12 +585,18 @@ void GameScene::Draw() {
 		tr->DrawText("ESC / (B) : Title", { 32.0f, 96.0f }, 0.8f);
 
 		char hpLine[128];
-		snprintf(hpLine, sizeof(hpLine), "Player HP: %.0f   Dummy HP: %.0f", player_->GetHP(), dummy_->GetHP());
+		snprintf(hpLine, sizeof(hpLine), "Player HP: %.0f   Enemy HP: %.0f", player_->GetHP(), enemy_->GetHP());
 		tr->DrawText(hpLine, { 32.0f, 128.0f }, 0.8f);
 
 		char pointLine[128];
-		snprintf(pointLine, sizeof(pointLine), "Points  Player: %d   Dummy: %d", playerPoints_, dummyPoints_);
+		snprintf(pointLine, sizeof(pointLine), "Points  Player: %d   Enemy: %d", playerPoints_, enemyPoints_);
 		tr->DrawText(pointLine, { 32.0f, 160.0f }, 0.8f);
+
+		// 敵 AI の状態と学習ティア(デバッグ表示。本番 UI は B)。
+		char aiLine[128];
+		snprintf(aiLine, sizeof(aiLine), "Enemy AI: %s   LearnTier: %d",
+			enemyBrain_->GetStateName(), playerModel_->Tier());
+		tr->DrawText(aiLine, { 32.0f, 224.0f }, 0.8f);
 
 		// 装備中の武器名と残弾(素手など弾の概念が無い武器は kInfiniteAmmo なので数値を出さない)。
 		char weaponLine[128];
