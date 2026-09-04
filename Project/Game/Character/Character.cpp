@@ -122,7 +122,8 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 		if (moveX > 1.0f) moveX = 1.0f;
 		if (moveX < -1.0f) moveX = -1.0f;
 		if (moveX > 0.0001f || moveX < -0.0001f) {
-			const float speed = kMoveSpeed * (isCrouching_ ? kCrouchMoveScale : 1.0f);
+			// slowMultiplier_ は氷銃で1.0未満になる(ApplySlow参照)。通常時は1.0で無効。
+			const float speed = kMoveSpeed * (isCrouching_ ? kCrouchMoveScale : 1.0f) * slowMultiplier_;
 			position_.x += moveX * speed * dt;
 		}
 	}
@@ -240,6 +241,21 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 		equippedWeapon_ = std::make_unique<UnarmedWeapon>();
 	}
 
+	// ---- 状態異常(氷銃・炎銃。ApplySlow/ApplyBurn 参照) ----
+	if (slowTimer_ > 0.0f) {
+		slowTimer_ -= dt;
+		if (slowTimer_ <= 0.0f) {
+			slowMultiplier_ = 1.0f; // 効果切れ。通常速度へ戻す
+		}
+	}
+	if (burnTimer_ > 0.0f) {
+		burnTimer_ -= dt;
+		ApplyDamage(burnDps_ * dt); // 既存のApplyDamageをそのまま使う(ダメージフラッシュも自然に付く)
+		if (burnTimer_ <= 0.0f) {
+			burnDps_ = 0.0f;
+		}
+	}
+
 	// ---- ダメージフラッシュ(ApplyDamage で damageFlashTimer_ がセットされている間、赤くする) ----
 	if (damageFlashTimer_ > 0.0f) {
 		damageFlashTimer_ -= dt;
@@ -256,11 +272,17 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 		Vector3 visualPos = position_;
 		visualPos.y = position_.y - kRestHeight * (1.0f - heightScale);
 		visual_->SetTranslate(visualPos);
-		// ダメージを受けた直後だけ赤く光らせる(それ以外は素の白)。
-		// 「当たったのに何も起きた感じがしない」を防ぐための最小限の反応。
-		visual_->GetMesh().SetColor(damageFlashTimer_ > 0.0f
-			? Vector4{ 1.0f, 0.2f, 0.2f, 1.0f }
-			: Vector4{ 1.0f, 1.0f, 1.0f, 1.0f });
+		// ダメージを受けた直後は赤く、氷銃で減速中は水色に光らせる(それ以外は素の白)。
+		// 「当たったのに何も起きた感じがしない/なぜ動きが重いのか分からない」を防ぐための最小限の反応。
+		// 燃焼(burn)は毎フレーム ApplyDamage が呼ばれ続けるので、既存の赤フラッシュが自然に
+		// 点滅し続ける形で表現される(専用の色は別途用意しない)。
+		Vector4 tintColor{ 1.0f, 1.0f, 1.0f, 1.0f };
+		if (damageFlashTimer_ > 0.0f) {
+			tintColor = { 1.0f, 0.2f, 0.2f, 1.0f };
+		} else if (slowTimer_ > 0.0f) {
+			tintColor = { 0.3f, 0.75f, 1.0f, 1.0f };
+		}
+		visual_->GetMesh().SetColor(tintColor);
 		visual_->Update();
 	}
 
@@ -345,6 +367,13 @@ bool Character::ReceiveHit(const AttackHitbox& hitbox) {
 	// 自分の位置と命中位置(hitbox.center)から向きを逆算すると、密着距離では
 	// 攻撃ヒットボックスの中心が自分を追い越してしまい、向きが反転するバグになるため。
 	ApplyKnockback(hitbox.knockbackDirX, hitbox.knockbackPower);
+	// 状態異常(氷銃・炎銃)。duration<=0 の武器(既存の全武器)は既定値のままなので何も起きない。
+	if (hitbox.slowDuration > 0.0f) {
+		ApplySlow(hitbox.slowMultiplier, hitbox.slowDuration);
+	}
+	if (hitbox.burnDuration > 0.0f) {
+		ApplyBurn(hitbox.burnDps, hitbox.burnDuration);
+	}
 	return true;
 }
 
@@ -402,6 +431,23 @@ void Character::ApplyKnockback(float directionX, float power) {
 	knockbackVelocityX_ = dirX * power; // 既存のノックバック速度を上書きする(積み増しはしない)
 }
 
+void Character::ApplySlow(float multiplier, float duration) {
+	if (multiplier >= 1.0f || duration <= 0.0f) {
+		return; // 減速にならない/一瞬も持続しない指定は無視する
+	}
+	// ApplyKnockback と同じ上書き式。再命中すればその時点の強さ・持続時間にリセットされる。
+	slowMultiplier_ = multiplier;
+	slowTimer_ = duration;
+}
+
+void Character::ApplyBurn(float dps, float duration) {
+	if (dps <= 0.0f || duration <= 0.0f) {
+		return;
+	}
+	burnDps_ = dps;
+	burnTimer_ = duration;
+}
+
 void Character::ResetForNewRound(const Vector3& spawnPos) {
 	// HP・速度・しゃがみ/接地状態・攻撃クールダウンをすべて初期状態に戻し、spawnPos へ再配置する。
 	// 本物の「ラウンド進行」(10ポイント先取・次ステージ選出など)はフェーズ5の別タスクで、
@@ -416,6 +462,10 @@ void Character::ResetForNewRound(const Vector3& spawnPos) {
 	hasPendingThrow_ = false;
 	pendingThrowWeapon_.reset(); // 消費されなかった投げ武器が万一残っていても、ここで確実に手放す
 	damageFlashTimer_ = 0.0f;
+	slowMultiplier_ = 1.0f;
+	slowTimer_ = 0.0f;
+	burnDps_ = 0.0f;
+	burnTimer_ = 0.0f;
 
 	if (visual_) {
 		visual_->SetTranslate(position_);

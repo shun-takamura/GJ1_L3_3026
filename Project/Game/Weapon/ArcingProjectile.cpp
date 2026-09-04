@@ -42,9 +42,19 @@ void ArcingProjectile::Initialize(Camera* camera, const std::string& name, const
 	bounces_ = spec.bounces;
 	wallRestitution_ = spec.wallRestitution;
 	floorRestitution_ = spec.floorRestitution;
+	maxBounces_ = spec.maxBounces;
+	bounceCount_ = 0;
 	proximityRadius_ = spec.proximityRadius;
 	damageFalloffRange_ = spec.damageFalloffRange;
 	minDamageMultiplier_ = spec.minDamageMultiplier;
+	slowMultiplier_ = spec.slowMultiplier;
+	slowDuration_ = spec.slowDuration;
+	burnDps_ = spec.burnDps;
+	burnDuration_ = spec.burnDuration;
+	spawnsFireHazard_ = spec.spawnsFireHazard;
+	fireHazardRadius_ = spec.fireHazardRadius;
+	fireHazardDuration_ = spec.fireHazardDuration;
+	fireHazardDps_ = spec.fireHazardDps;
 
 	// 投げ武器でモデル指定があればモデルを、無ければ(＝銃弾)プリミティブを見た目にする。
 	if (object3DManager && dxCore && !modelDir.empty() && !modelFile.empty()) {
@@ -97,7 +107,11 @@ void ArcingProjectile::Update(float dt) {
 		if (stage_) {
 			const Vector3 half{ radius_, radius_, radius_ };
 			if (stage_->OverlapsSolid(position_, half) || !stage_->IsPointInsideBounds(position_)) {
-				dead_ = true;
+				// すぐには死なせず保留する(HasPendingTerrainDeath参照)。この位置が同時に
+				// キャラとも重なっている場合、GameScene側のTryHitCharacter()に先に判定の
+				// 機会を与えるため ── ここで即座に dead_ を立てると、壁際に立つ相手を
+				// 狙った弾が着弾判定を理由に命中判定なしで消えるバグになる。
+				pendingTerrainDeath_ = true;
 				diedOnTerrain_ = true;
 				return;
 			}
@@ -108,7 +122,7 @@ void ArcingProjectile::Update(float dt) {
 		// hitWall/grounded を検出してから速度を反射させる(ProjectileSpawnRequest::bounces
 		// のコメント参照)。
 		if (!stage_ || !stage_->IsPointInsideBounds(position_)) {
-			dead_ = true;
+			pendingTerrainDeath_ = true; // 保留の理由はHasPendingTerrainDeathのコメント参照
 			diedOnTerrain_ = true;
 			return;
 		}
@@ -117,24 +131,42 @@ void ArcingProjectile::Update(float dt) {
 		const StageMoveResult mv = stage_->MoveAabb(position_, to, half);
 		position_ = mv.position;
 
+		// 反射回数の上限(maxBounces_>0)に達した後は、壁/床に触れても反射せずそのまま着弾させる
+		// (リコシェットライフルの「反射は3回まで」用。上限が無い(0)グレラン・投げ捨て武器は
+		// bounceExhausted_ が常にfalseのまま=今までどおり無制限に反射し続ける)。
+		const bool bounceExhausted = (maxBounces_ > 0 && bounceCount_ >= maxBounces_);
+
 		if (mv.hitWall) {
+			if (bounceExhausted) {
+				// 保留の理由はHasPendingTerrainDeathのコメント参照。ここが「横から当てたのに
+				// 反射処理が先に走ってダメージが入らない」と報告された症状の主な発生源
+				// (跳ね返り使い切り後の壁着弾が、壁際の相手への命中判定より先に確定していた)。
+				pendingTerrainDeath_ = true;
+				diedOnTerrain_ = true;
+				return;
+			}
 			velocityX_ = -velocityX_ * wallRestitution_;
+			++bounceCount_;
 		}
 		if (mv.hitCeiling && velocityY_ > 0.0f) {
 			velocityY_ = 0.0f; // 天井バウンドは狙わないシンプルな割り切り(押し返すだけ)
 		}
 		if (mv.grounded) {
-			if (floorRestitution_ > 0.0f) {
-				velocityY_ = -velocityY_ * floorRestitution_; // 床でも跳ね続ける(グレラン)
+			if (floorRestitution_ > 0.0f && !bounceExhausted) {
+				velocityY_ = -velocityY_ * floorRestitution_; // 床でも跳ね続ける(グレラン/リコシェットライフル)
+				++bounceCount_;
 			} else {
 				velocityY_ = 0.0f;
-				dead_ = true; // 着地確定=静止(投げ捨てた武器はここで初めて死ぬ)
+				// 着地確定=静止(投げ捨てた武器・反射回数を使い切った弾はここで死ぬ)。
+				// 保留の理由はHasPendingTerrainDeathのコメント参照(着地点に相手が立っていれば
+				// そちらの命中判定が先に試される)。
+				pendingTerrainDeath_ = true;
 				diedOnTerrain_ = true;
 				return;
 			}
 		}
 		if (!stage_->IsPointInsideBounds(position_)) {
-			dead_ = true;
+			pendingTerrainDeath_ = true;
 			diedOnTerrain_ = true;
 			return;
 		}
@@ -185,9 +217,19 @@ void ArcingProjectile::TryHitCharacter(Character& defender) {
 	// ノックバックは「飛んでいる方向」をそのまま使う(Character::AttackHitbox.knockbackDirX と
 	// 同じ考え方: 命中位置から逆算すると密着距離で符号が反転するバグになるため)。
 	hitbox.knockbackDirX = (velocityX_ >= 0.0f) ? 1.0f : -1.0f;
+	// 状態異常(氷銃・炎銃)。既定値(倍率1.0/持続0)のままの武器は Character::ReceiveHit 側で無視される。
+	hitbox.slowMultiplier = slowMultiplier_;
+	hitbox.slowDuration = slowDuration_;
+	hitbox.burnDps = burnDps_;
+	hitbox.burnDuration = burnDuration_;
 
 	if (defender.ReceiveHit(hitbox)) {
 		dead_ = true; // 命中したので消える(貫通はしない)
+		// 同フレームで地形/場外による死も保留されていた場合、キャラ命中がそれを上書きする
+		// (HasPendingTerrainDeath参照)。GetSpawnsFireHazard()等の死因分岐が「地形に当たった」
+		// と誤認しないよう、diedOnTerrain_もここで確実に折る。
+		pendingTerrainDeath_ = false;
+		diedOnTerrain_ = false;
 	}
 }
 

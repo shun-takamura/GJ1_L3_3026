@@ -37,6 +37,12 @@ struct ProjectileSpawnRequest {
 	float floorRestitution = 0.0f; // 床反射時に残す速度の割合。0なら着地した瞬間に静止=死亡扱いになる
 	                                // (投げ捨て武器はこちら)。0より大きいと床でも跳ね続ける(グレラン)。
 
+	// 0(既定)なら反射回数無制限(グレネードランチャー・投げ捨てた武器はこのまま)。
+	// 1以上なら、壁/床への反射がこの回数に達した後は次に地形へ触れても反射せず、
+	// そのまま着弾して消える(リコシェットライフルの「反射は3回まで」用。
+	// ArcingProjectile::bounceCount_ でカウントする)。
+	int maxBounces = 0;
+
 	// 0.0f(既定)なら無効。0より大きい場合、発射者以外のキャラクターがこの半径内に入った
 	// 瞬間に(直撃していなくても)即座に死亡扱いにする近接センサー判定
 	// (ArcingProjectile::TryProximityDetonate 参照。グレネードランチャー専用)。
@@ -48,4 +54,24 @@ struct ProjectileSpawnRequest {
 	// 対象外。ArcingProjectile::TryHitCharacter 参照。ショットガンの近距離特化調整用)。
 	float damageFalloffRange = 0.0f;
 	float minDamageMultiplier = 1.0f;
+
+	// ---- 状態異常(氷銃・炎銃) ----
+	// 既定値(倍率1.0/持続0)なら効果無し。直撃時に ArcingProjectile::TryHitCharacter が
+	// Character::AttackHitbox へそのままコピーし、Character::ReceiveHit が適用する
+	// (Character::AttackHitbox の同名フィールドと対。詳細はそちらのコメント参照)。
+	float slowMultiplier = 1.0f;
+	float slowDuration = 0.0f;
+	float burnDps = 0.0f;
+	float burnDuration = 0.0f;
+
+	// ---- 着弾点を燃やす(炎銃専用) ----
+	// false(既定)なら何もしない。true の場合、着弾(キャラ命中/地形命中/寿命切れいずれでも)した
+	// 位置に、半径 fireHazardRadius・持続 fireHazardDuration 秒の炎(GameScene::FireHazard)を
+	// 1つ残す。踏んでいるキャラは発射者自身を含め fireHazardDps の継続ダメージを受け続ける
+	// (Blaster の「自分の爆風にも巻き込まれる」と同じ、位置関係そのものをリスクにする設計)。
+	// 直撃時の burnDps/burnDuration(このキャラに撃ち込まれた瞬間の効果)とは別枠。
+	bool spawnsFireHazard = false;
+	float fireHazardRadius = 0.0f;
+	float fireHazardDuration = 0.0f;
+	float fireHazardDps = 0.0f;
 };
