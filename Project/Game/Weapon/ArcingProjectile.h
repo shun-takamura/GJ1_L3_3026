@@ -65,6 +65,33 @@ public:
 	/// <summary>地形（または場外）に当たって消えたか。GameScene が壊れる床を削るのに使う。</summary>
 	bool DiedOnTerrain() const { return diedOnTerrain_; }
 
+	/// <summary>
+	/// Update() が今フレーム地形/場外との接触を検出したが、まだ本当には死んでいない
+	/// (=キャラ命中が同フレーム内で優先される余地を残している)状態か。
+	///
+	/// 地形との接触で即座に dead_ を立ててしまうと、TryHitCharacter() 冒頭の
+	/// 「if (dead_) return;」ガードに阻まれて、同じフレームでキャラにも重なっていた場合に
+	/// 命中判定そのものが一切試されなくなる(壁際に立っている相手を狙った弾が、壁への着弾を
+	/// 理由に命中判定なしで消えてしまうバグ ── 投げ武器で顕著だが原理上は全弾に共通)。
+	/// これを避けるため、地形/場外による死は一旦ここに保留し、GameScene が
+	/// TryHitCharacter()/TryProximityDetonate() を試した後に ResolvePendingTerrainDeath() を
+	/// 呼んで確定させる(キャラに実際に命中していれば、その時点で dead_ が既に立っている
+	/// ので何もしない=キャラ命中が地形死より優先される)。
+	/// </summary>
+	bool HasPendingTerrainDeath() const { return pendingTerrainDeath_; }
+
+	/// <summary>
+	/// GameScene が同フレームの TryHitCharacter()/TryProximityDetonate() を一通り試した後、
+	/// 毎フレーム必ず呼ぶ。pendingTerrainDeath_ がまだ残っていれば(=キャラ命中で
+	/// 上書きされなかった場合)、ここで初めて dead_ を確定させる。
+	/// </summary>
+	void ResolvePendingTerrainDeath() {
+		if (pendingTerrainDeath_ && !dead_) {
+			dead_ = true;
+		}
+		pendingTerrainDeath_ = false;
+	}
+
 	Vector3 GetPosition() const { return position_; }
 	Vector3 GetVelocity() const { return { velocityX_, velocityY_, 0.0f }; }
 	float GetRadius() const { return radius_; }
@@ -74,6 +101,13 @@ public:
 	/// <summary>爆風半径(0以下なら爆風を持たない通常弾)。GameScene が着弾時にこれを見て
 	/// 通常の直撃判定とは別に ResolveExplosion() を呼ぶかどうかを判断する。</summary>
 	float GetBlastRadius() const { return blastRadius_; }
+
+	/// <summary>着弾点に炎(FireHazard)を残すか(炎銃専用)。GameScene が着弾時にこれを見て
+	/// SpawnFireHazard() を呼ぶかどうかを判断する。GetBlastRadius() と同じ役割の炎版。</summary>
+	bool GetSpawnsFireHazard() const { return spawnsFireHazard_; }
+	float GetFireHazardRadius() const { return fireHazardRadius_; }
+	float GetFireHazardDuration() const { return fireHazardDuration_; }
+	float GetFireHazardDps() const { return fireHazardDps_; }
 
 	/// <summary>発射位置からの飛距離(現在位置とoriginの直線距離)。ダメージ距離減衰(Shotgun等)に使う。</summary>
 	float GetTraveledDistance() const;
@@ -125,6 +159,23 @@ private:
 	float knockbackPower_ = 0.0f;
 	float blastRadius_ = 0.0f; // 0以下なら爆風なし(通常弾)。ProjectileSpawnRequest::blastRadius から複製する
 	bool dead_ = false;
+	// 地形/場外による死を一旦保留するフラグ(HasPendingTerrainDeath/ResolvePendingTerrainDeath参照)。
+	// 寿命切れ(lifeTimer_<=0)による死はこの保留を経由せず即座に dead_ を立てる ──
+	// その場合は今フレーム位置が動いていない(Update()の最初でreturnする)ので、キャラ命中を
+	// 保留してまで再判定する意味が無い(前フレームまでに既に判定済みの位置と同じため)。
+	bool pendingTerrainDeath_ = false;
+
+	// ---- 状態異常(ProjectileSpawnRequest::slowMultiplier等のコピー。詳細はそちらのコメント参照) ----
+	float slowMultiplier_ = 1.0f;
+	float slowDuration_ = 0.0f;
+	float burnDps_ = 0.0f;
+	float burnDuration_ = 0.0f;
+
+	// ---- 着弾点を燃やす(ProjectileSpawnRequest::spawnsFireHazard等のコピー) ----
+	bool spawnsFireHazard_ = false;
+	float fireHazardRadius_ = 0.0f;
+	float fireHazardDuration_ = 0.0f;
+	float fireHazardDps_ = 0.0f;
 
 	// ---- 跳ね返り(ProjectileSpawnRequest::bounces 系のコピー。詳細はそちらのコメント参照) ----
 	bool bounces_ = false;

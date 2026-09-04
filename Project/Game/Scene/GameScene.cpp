@@ -30,6 +30,9 @@
 #include "Weapon/Minigun.h"
 #include "Weapon/HandCannon.h"
 #include "Weapon/RicochetRifle.h"
+#include "Weapon/IceGun.h"
+#include "Weapon/FireGun.h"
+#include "Weapon/FireHazard.h"
 #include "Log.h"
 
 #ifdef USE_IMGUI
@@ -114,22 +117,52 @@ namespace {
 		return aim;
 	}
 
-	/// <summary>0〜(count-1) の乱数で武器の種類を選び、フル装弾で1つ生成する。RandomGenerator 経由なので
-	/// リプレイのシード再現性を壊さない(11_Utilities.md、生の rand() は使わない)。</summary>
+	/// <summary>
+	/// ランダムスポーンの候補になる武器1種ぶんのエントリ。「武器名の表示」「ランダム抽選」
+	/// 「実際に1つ生成する」の3つを1つのテーブルにまとめておくことで、CreateRandomWeapon() と
+	/// デバッグ用ImGuiチェックボックス(GameScene::Initialize の Weapon Tuning ウィンドウ)が
+	/// 同じ並び・同じ有効/無効状態を共有できるようにしてある(スイッチ文とチェックボックスの
+	/// 並びを別々に手で同期させると順序がズレるバグの元になるため)。
+	/// </summary>
+	struct WeaponSpawnEntry {
+		const char* name;
+		bool enabled; // false にすると CreateRandomWeapon() の抽選候補から外れる(デバッグ用)
+		std::unique_ptr<Weapon>(*factory)();
+	};
+
+	WeaponSpawnEntry g_weaponSpawnPool[] = {
+		{ "Pistol",        true, []() -> std::unique_ptr<Weapon> { return std::make_unique<Pistol>(); } },
+		{ "AssaultRifle",  true, []() -> std::unique_ptr<Weapon> { return std::make_unique<AssaultRifle>(); } },
+		{ "Shotgun",       true, []() -> std::unique_ptr<Weapon> { return std::make_unique<Shotgun>(); } },
+		{ "Blaster",       true, []() -> std::unique_ptr<Weapon> { return std::make_unique<Blaster>(); } },
+		{ "GrenadeLauncher", true, []() -> std::unique_ptr<Weapon> { return std::make_unique<GrenadeLauncher>(); } },
+		{ "SniperRifle",   true, []() -> std::unique_ptr<Weapon> { return std::make_unique<SniperRifle>(); } },
+		{ "Minigun",       true, []() -> std::unique_ptr<Weapon> { return std::make_unique<Minigun>(); } },
+		{ "HandCannon",    true, []() -> std::unique_ptr<Weapon> { return std::make_unique<HandCannon>(); } },
+		{ "RicochetRifle", true, []() -> std::unique_ptr<Weapon> { return std::make_unique<RicochetRifle>(); } },
+		{ "IceGun",        true, []() -> std::unique_ptr<Weapon> { return std::make_unique<IceGun>(); } },
+		{ "FireGun",       true, []() -> std::unique_ptr<Weapon> { return std::make_unique<FireGun>(); } },
+	};
+	constexpr int kWeaponSpawnPoolCount = sizeof(g_weaponSpawnPool) / sizeof(g_weaponSpawnPool[0]);
+
+	/// <summary>g_weaponSpawnPool のうち enabled==true のものだけから乱数で1つ選び、フル装弾で
+	/// 生成する。RandomGenerator 経由なのでリプレイのシード再現性を壊さない(11_Utilities.md、
+	/// 生の rand() は使わない)。全て無効化されていた場合は Pistol にフォールバックする
+	/// (呼び出し側は常に非nullptrを前提にしているため、nullptrは返さない)。</summary>
 	std::unique_ptr<Weapon> CreateRandomWeapon() {
-		const int kind = RandomGenerator::Instance().NextInt(0, 8);
-		switch (kind) {
-			case 0: return std::make_unique<Pistol>();
-			case 1: return std::make_unique<AssaultRifle>();
-			case 2: return std::make_unique<Shotgun>();
-            case 3: return std::make_unique<Blaster>();
-			case 4: return std::make_unique<GrenadeLauncher>();
-			case 5: return std::make_unique<SniperRifle>();
-			case 6: return std::make_unique<Minigun>();
-			case 7: return std::make_unique<HandCannon>();
-			case 8: return std::make_unique<RicochetRifle>();
-			default: return 0;
+		int enabledIndices[kWeaponSpawnPoolCount];
+		int enabledCount = 0;
+		for (int i = 0; i < kWeaponSpawnPoolCount; ++i) {
+			if (g_weaponSpawnPool[i].enabled) {
+				enabledIndices[enabledCount++] = i;
+			}
 		}
+		if (enabledCount == 0) {
+			Log("CreateRandomWeapon: 武器が全てチェックOFFになっているため Pistol にフォールバックします\n");
+			return std::make_unique<Pistol>();
+		}
+		const int pick = enabledIndices[RandomGenerator::Instance().NextInt(0, enabledCount - 1)];
+		return g_weaponSpawnPool[pick].factory();
 	}
 }
 
@@ -208,6 +241,18 @@ void GameScene::Initialize() {
 	if (!weaponTuningWindowRegistered) {
 		weaponTuningWindowRegistered = true;
 		ImGuiManager::Instance().AddCallbackWindow("Weapon Tuning", []() {
+			// デバッグ用: ランダムスポーン(CreateRandomWeapon)の抽選候補から
+			// 武器を一時的に除外できるチェックボックス群。ここで触るのは
+			// g_weaponSpawnPool[i].enabled そのもの(CreateRandomWeapon と共有するテーブル。
+			// 上のコメント参照)なので、チェックを外した武器は次のランダムスポーンから
+			// 即座に対象外になる(既にステージに出ている物・拾得済みの物は消えない)。
+			if (ImGui::CollapsingHeader("Spawn Pool", ImGuiTreeNodeFlags_DefaultOpen)) {
+				for (int i = 0; i < kWeaponSpawnPoolCount; ++i) {
+					ImGui::PushID(i);
+					ImGui::Checkbox(g_weaponSpawnPool[i].name, &g_weaponSpawnPool[i].enabled);
+					ImGui::PopID();
+				}
+			}
 			if (ImGui::CollapsingHeader("Pistol")) {
 				ImGui::PushID("Pistol");
 				Pistol::DrawImGuiTuning();
@@ -253,6 +298,16 @@ void GameScene::Initialize() {
 				RicochetRifle::DrawImGuiTuning();
 				ImGui::PopID();
 			}
+			if (ImGui::CollapsingHeader("IceGun")) {
+				ImGui::PushID("IceGun");
+				IceGun::DrawImGuiTuning();
+				ImGui::PopID();
+			}
+			if (ImGui::CollapsingHeader("FireGun")) {
+				ImGui::PushID("FireGun");
+				FireGun::DrawImGuiTuning();
+				ImGui::PopID();
+			}
 		});
 	}
 #endif
@@ -262,6 +317,7 @@ void GameScene::Finalize() {
 	// 依存関係はないが、生成順と逆順に破棄する(可読性のための慣習)。
 	pickups_.clear();
 	flyingObjects_.clear();
+	fireHazards_.clear();
 	playerModel_.reset();
 	enemyBrain_.reset();
 	enemy_.reset();
@@ -465,6 +521,7 @@ void GameScene::Update() {
 	SpawnFromCharacter(*player_);
 	SpawnFromCharacter(*enemy_);
 	UpdateFlyingObjects(dt);
+	UpdateFireHazards(dt);
 
 	//===================================
 	// 武器拾得・ランダムスポーン
@@ -666,6 +723,11 @@ void GameScene::SpawnFlyingObject(const ProjectileSpawnRequest& spec, Character*
 void GameScene::UpdateFlyingObjects(float dt) {
 	for (auto& obj : flyingObjects_) {
 		obj->Update(dt);
+		// 今フレーム、どちらかのキャラに直撃して死んだか(地形/寿命切れとは区別する)。
+		// 炎銃の着弾点フレア(下のSpawnFireHazard呼び出し)を「キャラに直撃した場合は
+		// 除外する」判断に使う ── 直撃した相手は既に burnDps/burnDuration で燃えるので、
+		// そこへさらに地面の炎(範囲攻撃)まで残すと同じ1発で二重に効果が及んでしまうため。
+		bool diedFromCharacterHit = false;
 		if (!obj->IsDead()) {
 			// 発射者自身には ArcingProjectile::TryHitCharacter 内で当たらないようになっている。
 			obj->TryHitCharacter(*player_);
@@ -681,9 +743,16 @@ void GameScene::UpdateFlyingObjects(float dt) {
 			// このブロックへ来る前に既に弾いているため)。ショットガンのように1トリガーで
 			// 複数弾出る武器で「実際に何発当たっているか」を目視確認できるようにする。
 			if (obj->IsDead()) {
+				diedFromCharacterHit = true;
 				AddDebugFlash(obj->GetPosition(), 0.25f, Vector4{ 0.2f, 1.0f, 0.2f, 1.0f }, 0.3f);
 			}
 		}
+
+		// 地形/場外による死は、上の命中判定が終わるまで ArcingProjectile 側で保留されている
+		// (ArcingProjectile::HasPendingTerrainDeath 参照 ── 壁際に立つ相手を狙った弾が、
+		// 着弾判定を理由に命中判定なしで消えてしまうのを防ぐため)。ここで初めて確定させる。
+		// 上の TryHitCharacter で実際に命中していれば既に上書き済みなので何も起きない。
+		obj->ResolvePendingTerrainDeath();
 
 		// 上の TryHitCharacter で今フレーム命中して死んだ場合も含めて、死因を問わず
 		// ここでまとめて後処理を行う(爆風武器は「地形に当たったから」ではなく
@@ -694,6 +763,16 @@ void GameScene::UpdateFlyingObjects(float dt) {
 			} else if (obj->DiedOnTerrain() && stage_) {
 				// 爆風を持たない通常弾は今まで通り、着弾点だけの小さい範囲を削る。
 				stage_->DamageSphere(obj->GetPosition(), obj->GetRadius() * 1.5f, obj->GetDamage());
+			}
+			// 炎銃(FireGun)は着弾点に炎を残す。ただしキャラに直撃した場合は残さない ──
+			// 直撃した相手は既に burnDps/burnDuration で燃えている(ArcingProjectile::TryHitCharacter
+			// が組み立てる AttackHitbox 経由)ので、そこにさらに地面の炎(範囲攻撃)まで広げると
+			// 1発で「直撃燃焼+範囲燃焼」の二重取りになってしまう。地形着弾・寿命切れのときだけ
+			// 炎を残す(爆風と違い地形は削らない。「立ち入れない範囲を作る」武器であって
+			// 「壊す」武器ではないため)。
+			if (obj->GetSpawnsFireHazard() && !diedFromCharacterHit) {
+				SpawnFireHazard(obj->GetPosition(), obj->GetFireHazardRadius(),
+					obj->GetFireHazardDuration(), obj->GetFireHazardDps());
 			}
 		}
 	}
@@ -773,6 +852,35 @@ void GameScene::ApplyBlastToCharacter(Character& target, const Vector3& center, 
 	target.ReceiveHit(hitbox);
 }
 
+void GameScene::SpawnFireHazard(const Vector3& center, float radius, float duration, float dps) {
+	auto hazard = std::make_unique<FireHazard>();
+	hazard->Initialize(camera_.get(), center, radius, dps, duration);
+	fireHazards_.push_back(std::move(hazard));
+}
+
+void GameScene::UpdateFireHazards(float dt) {
+	for (auto& hazard : fireHazards_) {
+		hazard->Update(dt);
+
+		// 炎銃自身も含め、踏んでいるキャラは毎フレーム燃え続ける。ReceiveHit を経由しないので
+		// ノックバックには一切影響しない(FireHazard.h の設計コメント参照)。ApplyBurn は
+		// Character::ApplyKnockback と同じ上書き式なので、踏み続ける限り毎フレーム
+		// 「あと1秒燃える」に更新され続け、離れた瞬間から自然に残り火が消えていく。
+		constexpr float kBurnRefreshDuration = 1.0f;
+		if (hazard->Overlaps(player_->GetPosition())) {
+			player_->ApplyBurn(hazard->GetDps(), kBurnRefreshDuration);
+		}
+		if (hazard->Overlaps(enemy_->GetPosition())) {
+			enemy_->ApplyBurn(hazard->GetDps(), kBurnRefreshDuration);
+		}
+	}
+
+	fireHazards_.erase(
+		std::remove_if(fireHazards_.begin(), fireHazards_.end(),
+			[](const std::unique_ptr<FireHazard>& hazard) { return hazard->IsDead(); }),
+		fireHazards_.end());
+}
+
 void GameScene::TryPickUpWeapon(Character& character) {
 	if (!character.CanPickUpWeapon()) {
 		return; // 既に何か武器を持っている(素手ではない)ので拾えない
@@ -839,6 +947,9 @@ void GameScene::Draw() {
 	}
 	for (auto& obj : flyingObjects_) {
 		obj->Draw();                    // 銃弾のプリミティブのみ(投げ武器モデルは下の Object3D パス)
+	}
+	for (auto& hazard : fireHazards_) {
+		hazard->Draw();                 // 炎銃(FireGun)が着弾点に残す炎
 	}
 
 	//===================================

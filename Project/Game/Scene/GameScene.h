@@ -11,6 +11,7 @@
 #include "Stage/StageGrid.h"
 #include "Weapon/ArcingProjectile.h"
 #include "Weapon/WeaponPickup.h"
+#include "Weapon/FireHazard.h"
 #include "AI/EnemyBrain.h"
 #include "AI/PlayerModel.h"
 #include "Common/CharacterInput.h"
@@ -83,6 +84,10 @@ private:
 
 	// ステージにタイマーで湧く、その場に静止した拾える武器。
 	std::vector<std::unique_ptr<WeaponPickup>> pickups_;
+
+	// 炎銃(FireGun)が着弾点に残す、地面に居座る炎。踏んでいる間、発射者自身を含め
+	// 継続ダメージを受け続ける(FireHazard.h の設計コメント参照)。
+	std::vector<std::unique_ptr<FireHazard>> fireHazards_;
 
 	//====================
 	// デバッグ表示(攻撃判定・照準がどこを向いているかを目視確認するため)
@@ -178,6 +183,20 @@ private:
 	/// </summary>
 	void ApplyBlastToCharacter(Character& target, const Vector3& center, float blastRadius,
 		float maxDamage, float maxKnockbackPower);
+
+	/// <summary>
+	/// center を中心に半径 radius・DPS dps の炎(FireHazard)を1つ生成し fireHazards_ に積む
+	/// (炎銃の着弾点。UpdateFlyingObjects が ArcingProjectile::GetSpawnsFireHazard() を見て呼ぶ)。
+	/// </summary>
+	void SpawnFireHazard(const Vector3& center, float radius, float duration, float dps);
+
+	/// <summary>
+	/// fireHazards_ を全て更新し、寿命が尽きたものを取り除く。生きているものは毎フレーム
+	/// player_/enemy_ との重なりを FireHazard::Overlaps() で判定し、重なっていれば
+	/// Character::ApplyBurn() を直接呼ぶ(Character::ReceiveHit を経由しない理由は
+	/// FireHazard.h の設計コメント参照 ── ノックバックへの意図しない副作用を避けるため)。
+	/// </summary>
+	void UpdateFireHazards(float dt);
 
 	/// <summary>
 	/// character が無武装(CanPickUpWeapon)で pickups_ のいずれかに重なっていれば、

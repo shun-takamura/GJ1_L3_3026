@@ -63,6 +63,14 @@ public:
 		// 符号が反転する(＝攻撃した側に向かって吹っ飛ぶ)バグになる。それを避けるため、
 		// 攻撃した瞬間の照準方向(aimDirX_)をそのままコピーして持ち運ぶ。
 		float knockbackDirX = 1.0f;
+
+		// ---- 状態異常(氷銃・炎銃用) ----
+		// 既定値(倍率1.0/持続0)なら「効果無し」を意味し、既存の全武器の挙動は変わらない。
+		// ReceiveHit() が duration>0 のときだけ Character::ApplySlow/ApplyBurn を呼ぶ。
+		float slowMultiplier = 1.0f; // 1.0未満で移動速度が遅くなる(0.35なら35%の速さに)
+		float slowDuration = 0.0f;   // この秒数だけ遅くなる。0以下なら減速効果無し
+		float burnDps = 0.0f;        // 継続ダメージ(1秒あたり)
+		float burnDuration = 0.0f;   // この秒数だけ継続ダメージを受ける。0以下なら燃焼効果無し
 	};
 
 	Character();
@@ -119,6 +127,15 @@ public:
 
 	/// <summary>directionX の符号方向へ、大きさ power の初速でノックバックさせる(横視点なので水平X方向のみ)。</summary>
 	void ApplyKnockback(float directionX, float power);
+
+	/// <summary>移動速度に multiplier(1.0未満で減速)を duration 秒だけ掛ける(氷銃用)。
+	/// ApplyKnockback と同じ上書き式 ── 再命中すれば効果時間・強さがその時点の値に更新される
+	/// (積み増しはしない)。multiplier が 1.0 以上、または duration が 0 以下なら何もしない。</summary>
+	void ApplySlow(float multiplier, float duration);
+
+	/// <summary>1秒あたり dps のダメージを duration 秒間、毎フレーム ApplyDamage で与え続ける(炎銃用)。
+	/// ApplySlow と同じ上書き式。dps が 0 以下、または duration が 0 以下なら何もしない。</summary>
+	void ApplyBurn(float dps, float duration);
 
 	Vector3 GetPosition() const { return position_; }
 	void SetPosition(const Vector3& pos) { position_ = pos; }
@@ -269,6 +286,12 @@ private:
 	float aimDirY_ = 0.0f;                        // マウス/右スティックが未入力のフレームは直前の値を維持する
 	float knockbackVelocityX_ = 0.0f;             // ノックバックによる水平速度。時間経過で0へ減衰していく
 	float verticalVelocity_ = 0.0f;               // 重力・ジャンプによる垂直速度
+
+	// ---- 状態異常(氷銃・炎銃用。ApplySlow/ApplyBurn 参照) ----
+	float slowMultiplier_ = 1.0f; // 1.0=通常速度。slowTimer_ が尽きたら1.0へ戻る
+	float slowTimer_ = 0.0f;      // 0より大きい間だけ slowMultiplier_ が有効
+	float burnDps_ = 0.0f;        // 継続ダメージの1秒あたりの量
+	float burnTimer_ = 0.0f;      // 0より大きい間だけ毎フレーム burnDps_*dt を ApplyDamage する
 	bool grounded_ = true;                        // 地面に接地しているか(falseの間だけジャンプ不可)
 	bool isCrouching_ = false;                    // しゃがみ中か(直前の Update() の crouchHeld && grounded_)
 

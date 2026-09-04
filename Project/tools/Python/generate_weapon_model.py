@@ -321,6 +321,41 @@ def build_mine():
     return parts, "Mine"
 
 
+def build_fire_gun():
+    """単発式の炎銃(状態異常: 直撃で燃焼+着弾点にFireHazardを残す)。バレル上に載せた
+    燃料タンク(FireGun特有、他のどの武器にも無い)+外側に開いたノズル(火炎放射のイメージ、
+    Blasterの銃口フレアより控えめ)が識別要素。焦げた金属を思わせる暗い赤褐色にして、
+    Blaster(鮮やかな橙)ともRocketLauncher(中間的な煉瓦色)とも明度で差別化する。"""
+    parts = [
+        add_box((0.025, 0.055, 0.0), (0.35, 0.11, 0.12), "Frame"),
+        add_cylinder_x(-0.10, 0.25, 0.07, y=0.19, verts=10, name="FuelTank"),
+        add_box((0.05, 0.24, 0.0), (0.05, 0.04, 0.04), "Valve"),
+        add_cylinder_x(0.20, 0.35, 0.035, y=0.055, verts=8, name="Barrel"),
+        add_cone_x(0.35, 0.48, 0.035, 0.10, y=0.055, verts=10, name="Nozzle"),
+        add_box((-0.08, -0.13, 0.0), (0.11, 0.28, 0.10), "Grip", rot_z_deg=-15.0),
+        add_ring(0.0, -0.01, 0.05, 0.009, "Guard"),
+    ]
+    return parts, "FireGun"
+
+
+def build_ice_gun():
+    """単発式の氷結銃(状態異常: 直撃した相手を減速させる)。銃口から斜め上下に突き出た
+    氷柱(アイシクル)+上面の霜除けフィン(角度をつけた小さな板2枚)が識別要素 ──
+    FireGunの燃料タンク+外開きノズルとは正反対の「先端が尖って広がる」シルエットにして
+    混同しない。色も全武器中もっとも明るい氷のような淡い水色にする。"""
+    parts = [
+        add_box((0.025, 0.055, 0.0), (0.35, 0.11, 0.10), "Frame"),
+        add_cylinder_x(0.18, 0.38, 0.035, y=0.055, verts=8, name="Barrel"),
+        add_cone_x(0.36, 0.50, 0.020, 0.002, y=0.09, verts=6, name="IcicleUp"),
+        add_cone_x(0.36, 0.48, 0.020, 0.002, y=0.02, verts=6, name="IcicleDown"),
+        add_box((-0.02, 0.13, 0.0), (0.10, 0.02, 0.06), "VentL", rot_z_deg=8.0),
+        add_box((0.10, 0.13, 0.0), (0.10, 0.02, 0.06), "VentR", rot_z_deg=-8.0),
+        add_box((-0.08, -0.13, 0.0), (0.11, 0.28, 0.09), "Grip", rot_z_deg=-15.0),
+        add_ring(0.0, -0.01, 0.05, 0.009, "Guard"),
+    ]
+    return parts, "IceGun"
+
+
 WEAPON_BUILDERS = {
     "Pistol": build_pistol,
     "Shotgun": build_shotgun,
@@ -333,6 +368,8 @@ WEAPON_BUILDERS = {
     "RocketLauncher": build_rocket_launcher,
     "RicochetRifle": build_ricochet_rifle,
     "Mine": build_mine,
+    "FireGun": build_fire_gun,
+    "IceGun": build_ice_gun,
 }
 
 # newmtl の Kd(拡散色)。他は既存踏襲のニュートラルグレーのままだが、
@@ -350,6 +387,8 @@ WEAPON_KD = {
     "RocketLauncher": (0.55, 0.22, 0.18),  # 弾薬・危険物を連想させる赤煉瓦色
     "RicochetRifle": (0.15, 0.55, 0.60),   # 跳弾/エネルギーを連想させる鮮やかなシアン。他に無い色相
     "Mine": (0.22, 0.26, 0.18),            # 兵器然とした暗いオリーブグリーン
+    "FireGun": (0.35, 0.16, 0.10),         # 焦げた金属を思わせる暗い赤褐色。Blaster(橙)/RocketLauncher(煉瓦色)より暗く落とす
+    "IceGun": (0.65, 0.80, 0.85),          # 氷のような淡い水色。全武器中もっとも明るく冷たい色
 }
 
 
