@@ -65,6 +65,12 @@
     <ClCompile Include="Weapon\Shotgun.cpp">
       <Filter>Weapon</Filter>
     </ClCompile>
+    <ClCompile Include="Weapon\Blaster.cpp">
+      <Filter>Weapon</Filter>
+    </ClCompile>
+    <ClCompile Include="Weapon\GrenadeLauncher.cpp">
+      <Filter>Weapon</Filter>
+    </ClCompile>
     <ClCompile Include="Weapon\ArcingProjectile.cpp">
       <Filter>Weapon</Filter>
     </ClCompile>
@@ -147,6 +153,12 @@
       <Filter>Weapon</Filter>
     </ClInclude>
     <ClInclude Include="Weapon\Shotgun.h">
+      <Filter>Weapon</Filter>
+    </ClInclude>
+    <ClInclude Include="Weapon\Blaster.h">
+      <Filter>Weapon</Filter>
+    </ClInclude>
+    <ClInclude Include="Weapon\GrenadeLauncher.h">
       <Filter>Weapon</Filter>
     </ClInclude>
     <ClInclude Include="Weapon\ArcingProjectile.h">

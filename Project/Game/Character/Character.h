@@ -223,6 +223,7 @@ private:
 	static constexpr float kThrowGravityScale = 1.0f;    // 重力の掛かり具合
 	static constexpr float kThrowLifeTime = 3.0f;        // 何にも当たらなかった場合に消えるまでの秒数
 	static constexpr float kThrowForwardOffset = 1.0f;   // 投げる位置を自分の中心からどれだけ照準方向へ離すか
+	static constexpr float kThrowWallRestitution = 0.5f; // 投げた武器が壁で滑るように弾かれる程度(床は0=着地即静止)
 
 	/// <summary>CollisionSystem に自分用の Capsule コライダーを設定する(Initialize から呼ぶ)。</summary>
 	void SetupCollider();

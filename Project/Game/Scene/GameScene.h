@@ -163,6 +163,23 @@ private:
 	void UpdateFlyingObjects(float dt);
 
 	/// <summary>
+	/// 爆風(blastRadius > 0)を持つ弾が着弾・消滅したときに呼ぶ。地形を爆風半径ぶんまとめて
+	/// 削り、爆心から近いほど強いダメージ/ノックバックを「発射者自身を含む」全キャラクターへ
+	/// 与える(ApplyBlastToCharacter に委譲)。通常弾の直撃判定(TryHitCharacter)とは別枠。
+	/// </summary>
+	void ResolveExplosion(const ArcingProjectile& obj);
+
+	/// <summary>
+	/// center を中心とした半径 blastRadius の爆風が target に届いているかを調べ、届いていれば
+	/// 距離に応じて減衰させた(爆心=100%、blastRadius の端=0%)ダメージ/ノックバックを
+	/// target::ReceiveHit 経由で適用する。target が発射者自身であっても区別なく適用する ──
+	/// この「距離が近ければ自分も無事では済まない」という位置関係そのものが、爆風武器の
+	/// リスクリワードの正体(Weapon 側に別途「自爆用の反動値」を持たせていない)。
+	/// </summary>
+	void ApplyBlastToCharacter(Character& target, const Vector3& center, float blastRadius,
+		float maxDamage, float maxKnockbackPower);
+
+	/// <summary>
 	/// character が無武装(CanPickUpWeapon)で pickups_ のいずれかに重なっていれば、
 	/// その場で装備させて該当 pickup を消費済みにする。
 	/// </summary>

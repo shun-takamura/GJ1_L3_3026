@@ -1,5 +1,8 @@
 #include "ArcingProjectile.h"
 
+#include <algorithm>
+#include <cmath>
+
 #include "Camera.h"
 #include "Character/Character.h"
 #include "Common/IStageQuery.h"
@@ -22,6 +25,7 @@ void ArcingProjectile::Initialize(Camera* camera, const std::string& name, const
 	stage_ = stage;
 	owner_ = owner;
 
+	origin_ = spec.origin;
 	position_ = spec.origin;
 	velocityX_ = spec.velocityX;
 	velocityY_ = spec.velocityY;
@@ -30,6 +34,13 @@ void ArcingProjectile::Initialize(Camera* camera, const std::string& name, const
 	lifeTimer_ = spec.lifeTime;
 	damage_ = spec.damage;
 	knockbackPower_ = spec.knockbackPower;
+	blastRadius_ = spec.blastRadius;
+	bounces_ = spec.bounces;
+	wallRestitution_ = spec.wallRestitution;
+	floorRestitution_ = spec.floorRestitution;
+	proximityRadius_ = spec.proximityRadius;
+	damageFalloffRange_ = spec.damageFalloffRange;
+	minDamageMultiplier_ = spec.minDamageMultiplier;
 
 	visual_ = std::make_unique<PrimitiveInstance>();
 	visual_->Initialize(visualType, name);
@@ -56,18 +67,56 @@ void ArcingProjectile::Update(float dt) {
 	// Character の重力積分(verticalVelocity_ += kGravity * dt)と同じ考え方で、
 	// 初速+重力による放物線を毎フレーム積分する。
 	velocityY_ += kGravityAcceleration * gravityScale_ * dt;
-	position_.x += velocityX_ * dt;
-	position_.y += velocityY_ * dt;
 
-	// ---- 地形との当たり判定 ----
-	// 小さい飛翔体を「半径radius_の正方形」とみなした簡易判定(正確な球判定ではないが、
-	// 見た目のサイズが小さいので視覚的な誤差は無視できる)。ステージ範囲外(場外)に
-	// 出た場合も「何にも当たらず消える」という点では地形衝突と同じ扱いにしている。
-	// フェーズ3の壊れる床は Character の攻撃(GameScene::ResolveAttack)と同様、
-	// 必要になったら GameScene 側で StageGrid::DamageSphere を呼んで削る想定。
-	if (stage_) {
+	if (!bounces_) {
+		// ---- 従来どおりの一本道の物理(Pistol/AssaultRifle/Shotgun/Blaster) ----
+		// 小さい飛翔体を「半径radius_の正方形」とみなした簡易判定(正確な球判定ではないが、
+		// 見た目のサイズが小さいので視覚的な誤差は無視できる)。1フレーム分まとめて移動してから
+		// 重なりを見るだけなので、地形へ触れた瞬間にそのまま埋まった位置で死ぬ
+		// (跳ね返り武器がこの粗さを避けるために下の MoveAabb 経路を使う理由でもある)。
+		position_.x += velocityX_ * dt;
+		position_.y += velocityY_ * dt;
+
+		if (stage_) {
+			const Vector3 half{ radius_, radius_, radius_ };
+			if (stage_->OverlapsSolid(position_, half) || !stage_->IsPointInsideBounds(position_)) {
+				dead_ = true;
+				diedOnTerrain_ = true;
+				return;
+			}
+		}
+	} else {
+		// ---- 跳ね返り経路(グレネードランチャー・投げ捨てた武器) ----
+		// Character/WeaponPickup と同じ MoveAabb によるスイープ判定で、めり込む前に
+		// hitWall/grounded を検出してから速度を反射させる(ProjectileSpawnRequest::bounces
+		// のコメント参照)。
+		if (!stage_ || !stage_->IsPointInsideBounds(position_)) {
+			dead_ = true;
+			diedOnTerrain_ = true;
+			return;
+		}
 		const Vector3 half{ radius_, radius_, radius_ };
-		if (stage_->OverlapsSolid(position_, half) || !stage_->IsPointInsideBounds(position_)) {
+		const Vector3 to{ position_.x + velocityX_ * dt, position_.y + velocityY_ * dt, position_.z };
+		const StageMoveResult mv = stage_->MoveAabb(position_, to, half);
+		position_ = mv.position;
+
+		if (mv.hitWall) {
+			velocityX_ = -velocityX_ * wallRestitution_;
+		}
+		if (mv.hitCeiling && velocityY_ > 0.0f) {
+			velocityY_ = 0.0f; // 天井バウンドは狙わないシンプルな割り切り(押し返すだけ)
+		}
+		if (mv.grounded) {
+			if (floorRestitution_ > 0.0f) {
+				velocityY_ = -velocityY_ * floorRestitution_; // 床でも跳ね続ける(グレラン)
+			} else {
+				velocityY_ = 0.0f;
+				dead_ = true; // 着地確定=静止(投げ捨てた武器はここで初めて死ぬ)
+				diedOnTerrain_ = true;
+				return;
+			}
+		}
+		if (!stage_->IsPointInsideBounds(position_)) {
 			dead_ = true;
 			diedOnTerrain_ = true;
 			return;
@@ -91,10 +140,18 @@ void ArcingProjectile::TryHitCharacter(Character& defender) {
 		return; // 既に消滅済み、または発射者自身には当てない
 	}
 
+	// 距離ダメージ減衰(Shotgun等)。knockbackPowerは対象外(ProjectileSpawnRequest::damageFalloffRange
+	// のコメント参照)。
+	float damage = damage_;
+	if (damageFalloffRange_ > 0.0f) {
+		const float t = std::clamp(GetTraveledDistance() / damageFalloffRange_, 0.0f, 1.0f);
+		damage *= 1.0f + (minDamageMultiplier_ - 1.0f) * t; // lerp(1.0, minDamageMultiplier_, t)
+	}
+
 	Character::AttackHitbox hitbox;
 	hitbox.center = position_;
 	hitbox.radius = radius_;
-	hitbox.damage = damage_;
+	hitbox.damage = damage;
 	hitbox.knockbackPower = knockbackPower_;
 	// ノックバックは「飛んでいる方向」をそのまま使う(Character::AttackHitbox.knockbackDirX と
 	// 同じ考え方: 命中位置から逆算すると密着距離で符号が反転するバグになるため)。
@@ -103,6 +160,26 @@ void ArcingProjectile::TryHitCharacter(Character& defender) {
 	if (defender.ReceiveHit(hitbox)) {
 		dead_ = true; // 命中したので消える(貫通はしない)
 	}
+}
+
+bool ArcingProjectile::TryProximityDetonate(const Character& target) {
+	if (dead_ || proximityRadius_ <= 0.0f || &target == owner_) {
+		return false; // 既に消滅済み/センサー無効/発射者自身はセンサー対象外(「敵が入ったら」の仕様)
+	}
+	const float dx = target.GetPosition().x - position_.x;
+	const float dy = target.GetPosition().y - position_.y;
+	if (std::sqrt(dx * dx + dy * dy) > proximityRadius_) {
+		return false;
+	}
+	dead_ = true; // ここでは直撃扱いにしない(diedOnTerrain_は立てない)。爆風はblastRadius_>0を見て
+	              // GameScene::UpdateFlyingObjects 側が「死んだから」起爆するパイプラインに乗る。
+	return true;
+}
+
+float ArcingProjectile::GetTraveledDistance() const {
+	const float dx = position_.x - origin_.x;
+	const float dy = position_.y - origin_.y;
+	return std::sqrt(dx * dx + dy * dy);
 }
 
 void ArcingProjectile::SetThrownWeaponPayload(std::unique_ptr<Weapon> weapon) {

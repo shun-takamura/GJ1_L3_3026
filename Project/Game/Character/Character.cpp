@@ -217,6 +217,14 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 		pendingThrow_.lifeTime = kThrowLifeTime;         // 何にも当たらなければこの秒数で消える
 		pendingThrow_.damage = kThrowDamage;             // 命中時のダメージ(投げ武器固定値)
 		pendingThrow_.knockbackPower = kThrowKnockbackPower;
+		// 壁に当たっても即座に死なず滑るように弾かれ、実際に足場のある床でMoveAabb基準の
+		// 正確な位置に着地して初めて静止する(floorRestitution=0)。これにより、ブロック側面に
+		// 当たった投げ武器が地形へめり込んでから不定方向へ解決される(=側面に当てたのに
+		// ブロックの上へワープする)不具合を避けられる(ArcingProjectile::Update の bounces_
+		// 経路を参照)。
+		pendingThrow_.bounces = true;
+		pendingThrow_.wallRestitution = kThrowWallRestitution;
+		pendingThrow_.floorRestitution = 0.0f;
 		hasPendingThrow_ = true; // GameScene が ConsumePendingThrow() で回収し、実体(ArcingProjectile)を生成する
 		// 今の武器の所有権を pendingThrowWeapon_ へ移し(=equippedWeapon_ は空になる)、
 		// 代わりに新しい素手を装備する。武器本体を捨てずに持ち運ぶのは、GameScene が

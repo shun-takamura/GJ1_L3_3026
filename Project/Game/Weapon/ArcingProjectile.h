@@ -58,6 +58,14 @@ public:
 	Vector3 GetVelocity() const { return { velocityX_, velocityY_, 0.0f }; }
 	float GetRadius() const { return radius_; }
 	float GetDamage() const { return damage_; }
+	float GetKnockbackPower() const { return knockbackPower_; }
+
+	/// <summary>爆風半径(0以下なら爆風を持たない通常弾)。GameScene が着弾時にこれを見て
+	/// 通常の直撃判定とは別に ResolveExplosion() を呼ぶかどうかを判断する。</summary>
+	float GetBlastRadius() const { return blastRadius_; }
+
+	/// <summary>発射位置からの飛距離(現在位置とoriginの直線距離)。ダメージ距離減衰(Shotgun等)に使う。</summary>
+	float GetTraveledDistance() const;
 
 	/// <summary>発射／投擲した本人（AI が「自分に向かってくる弾か」を判定するのに使う）。</summary>
 	const Character* GetOwner() const { return owner_; }
@@ -68,6 +76,14 @@ public:
 	/// そのまま委譲する(同じ判定ロジックをここで二重に持たない)。owner 自身には当てない。
 	/// </summary>
 	void TryHitCharacter(Character& defender);
+
+	/// <summary>
+	/// proximityRadius_ が有効(>0)なとき、target(発射者以外)がその半径内に入っていれば
+	/// 直撃していなくても即座に死亡扱いにする(グレネードランチャーの近接センサー)。
+	/// dead_ になった場合、GameScene 側の「死んだから爆発する」パイプラインへそのまま合流する。
+	/// 実際に起爆させたら true を返す。
+	/// </summary>
+	bool TryProximityDetonate(const Character& target);
 
 	/// <summary>
 	/// 投げ捨てられた武器そのものを積み荷として持たせる(銃弾用途では呼ばなくてよい)。
@@ -85,6 +101,7 @@ private:
 	Character* owner_ = nullptr;
 	std::unique_ptr<PrimitiveInstance> visual_;
 
+	Vector3 origin_{};          // 発射位置(position_ の初期値のコピー)。飛距離計算専用で以後変わらない
 	Vector3 position_{};
 	float velocityX_ = 0.0f;
 	float velocityY_ = 0.0f;
@@ -93,7 +110,16 @@ private:
 	float lifeTimer_ = 0.0f;    // 0以下になると、何にも当たらなくても消える
 	float damage_ = 0.0f;
 	float knockbackPower_ = 0.0f;
+	float blastRadius_ = 0.0f; // 0以下なら爆風なし(通常弾)。ProjectileSpawnRequest::blastRadius から複製する
 	bool dead_ = false;
+
+	// ---- 跳ね返り(ProjectileSpawnRequest::bounces 系のコピー。詳細はそちらのコメント参照) ----
+	bool bounces_ = false;
+	float wallRestitution_ = 0.0f;
+	float floorRestitution_ = 0.0f;
+	float proximityRadius_ = 0.0f;
+	float damageFalloffRange_ = 0.0f;
+	float minDamageMultiplier_ = 1.0f;
   
 	// 投げた武器そのもの。銃弾(Weapon::TryRangedAttack 由来)では常に nullptr。
 	// 投げ武器(Character::ConsumePendingThrow 由来)では、残弾があとで拾い直せるよう

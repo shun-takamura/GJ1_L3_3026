@@ -19,4 +19,33 @@ struct ProjectileSpawnRequest {
 	float lifeTime = 3.0f;             // この秒数が経つと、何にも当たらなくても消える
 	float damage = 0.0f;               // 命中時に与えるダメージ
 	float knockbackPower = 0.0f;       // 命中時に与えるノックバックの大きさ(水平方向)
+
+	// 0.0f(既定)なら爆風を持たない通常弾。0より大きい場合、着弾(キャラ命中/地形命中/
+	// 寿命切れのいずれでも)した瞬間にその場で爆発し、爆心からこの半径以内にいる
+	// 「発射者自身を含む」全キャラクターへ、距離に応じて減衰する damage/knockbackPower を
+	// 別途与える(ArcingProjectile::GetBlastRadius, GameScene::ResolveExplosion 参照)。
+	// 通常弾の直撃ダメージ(このstructのdamage/knockbackPower)とは別枠の効果。
+	float blastRadius = 0.0f;
+
+	// ---- 跳ね返り(リコシェット) ----
+	// false(既定)なら今まで通り、地形に触れた瞬間に即死する(Pistol/AssaultRifle/Shotgun/Blaster/
+	// 銃弾はすべてこのまま)。true にすると ArcingProjectile が地形接触で死なず、
+	// IStageQuery::MoveAabb の hitWall/grounded を見て速度を反射させながら飛び続ける
+	// (グレネードランチャー・投げ捨てた武器が使う。ArcingProjectile.h の設計コメント参照)。
+	bool bounces = false;
+	float wallRestitution = 0.0f;  // 壁反射時に残す速度の割合(0.6〜0.8想定)。bounces=falseなら無視される
+	float floorRestitution = 0.0f; // 床反射時に残す速度の割合。0なら着地した瞬間に静止=死亡扱いになる
+	                                // (投げ捨て武器はこちら)。0より大きいと床でも跳ね続ける(グレラン)。
+
+	// 0.0f(既定)なら無効。0より大きい場合、発射者以外のキャラクターがこの半径内に入った
+	// 瞬間に(直撃していなくても)即座に死亡扱いにする近接センサー判定
+	// (ArcingProjectile::TryProximityDetonate 参照。グレネードランチャー専用)。
+	float proximityRadius = 0.0f;
+
+	// ---- 距離ダメージ減衰 ----
+	// 0.0f(既定)なら減衰なし。0より大きい場合、発射位置からの飛距離が0でdamage倍率1.0、
+	// この値に達するとminDamageMultiplierまでdamageだけを線形減衰させる(knockbackPowerは
+	// 対象外。ArcingProjectile::TryHitCharacter 参照。ショットガンの近距離特化調整用)。
+	float damageFalloffRange = 0.0f;
+	float minDamageMultiplier = 1.0f;
 };

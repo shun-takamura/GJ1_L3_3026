@@ -1,5 +1,9 @@
 #include "AssaultRifle.h"
 
+#ifdef USE_IMGUI
+#include "imgui.h"
+#endif
+
 /// <summary>
 /// クールダウンが切れていて攻撃入力を「押しっぱなし」にしている間、毎フレーム自動で
 /// 弾を1発リクエストする(Pistol/Shotgun と違い triggered ではなく held を見る)。
@@ -38,4 +42,19 @@ bool AssaultRifle::TryRangedAttack(float dt, bool triggered, bool held, const Ve
 	spawn.knockbackPower = kKnockbackPower; // 命中時のノックバックの大きさ
 	outSpawns.push_back(spawn);
 	return true;
+}
+
+void AssaultRifle::DrawImGuiTuning() {
+#ifdef USE_IMGUI
+	ImGui::DragInt("Starting Ammo", &kStartingAmmo, 1.0f, 1, 200);
+	ImGui::DragFloat("Cooldown (s)", &kCooldown, 0.01f, 0.02f, 1.0f);
+	ImGui::DragFloat("Muzzle Speed", &kMuzzleSpeed, 0.1f, 1.0f, 40.0f);
+	ImGui::DragFloat("Gravity Scale", &kGravityScale, 0.05f, 0.0f, 3.0f);
+	ImGui::DragFloat("Bullet Radius", &kRadius, 0.01f, 0.01f, 1.0f);
+	ImGui::DragFloat("Life Time (s)", &kLifeTime, 0.05f, 0.1f, 10.0f);
+	ImGui::Separator();
+	ImGui::DragFloat("Damage", &kDamage, 0.5f, 0.0f, 100.0f);
+	ImGui::DragFloat("Knockback Power", &kKnockbackPower, 0.5f, 0.0f, 50.0f);
+	ImGui::DragFloat("Recoil Power", &kRecoilPower, 0.5f, 0.0f, 50.0f);
+#endif
 }
