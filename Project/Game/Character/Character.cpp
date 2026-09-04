@@ -10,6 +10,7 @@
 #include "Vector4.h"
 #include "Weapon/Weapon.h"
 #include "Weapon/UnarmedWeapon.h"
+#include "Object3DInstance.h"
 
 #ifdef USE_IMGUI
 #include "imgui.h"
@@ -52,6 +53,12 @@ void Character::Initialize(Camera* camera, const std::string& name, const Vector
 
 void Character::Finalize() {
 	visual_.reset();
+	weaponModel_.reset();
+}
+
+void Character::SetWeaponRenderContext(Object3DManager* object3DManager, DirectXCore* dxCore) {
+	object3DManager_ = object3DManager;
+	weaponModelDxCore_ = dxCore;
 }
 
 void Character::SetupCollider() {
@@ -248,11 +255,56 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 			: Vector4{ 1.0f, 1.0f, 1.0f, 1.0f });
 		visual_->Update();
 	}
+
+	// 手元の武器モデル(持ち替え検出・照準追従)。
+	UpdateWeaponModel();
 }
 
 void Character::Draw() {
 	if (visual_) {
 		visual_->Draw();
+	}
+}
+
+void Character::UpdateWeaponModel() {
+	// 手元に武器を出す位置(自分の中心から照準方向へ少し前、少し上)。
+	constexpr float kHandForward = 0.7f; // 照準方向への突き出し
+	constexpr float kHandUp = 0.1f;      // 胸〜肩あたりに来るよう少し持ち上げる
+	constexpr float kModelScale = 1.0f;
+
+	const std::string dir = equippedWeapon_ ? equippedWeapon_->GetModelDirectory() : std::string();
+	const std::string file = equippedWeapon_ ? equippedWeapon_->GetModelFileName() : std::string();
+
+	// 素手・モデル未指定・描画コンテキスト未設定 → モデルは出さない。
+	if (dir.empty() || file.empty() || !object3DManager_ || !weaponModelDxCore_) {
+		weaponModel_.reset();
+		weaponModelKey_.clear();
+		return;
+	}
+
+	// 前フレームと違う武器を持っていれば作り直す。
+	const std::string key = dir + "/" + file;
+	if (key != weaponModelKey_) {
+		weaponModel_ = std::make_unique<Object3DInstance>();
+		weaponModel_->Initialize(object3DManager_, weaponModelDxCore_, dir, file, name_ + "_Weapon");
+		weaponModel_->SetCamera(camera_);
+		weaponModel_->SetScale({ kModelScale, kModelScale, kModelScale });
+		weaponModelKey_ = key;
+	}
+
+	// 照準方向へ向ける(横視点なので画面平面 = Z 軸まわりの回転)。
+	const float aimAngle = std::atan2(aimDirY_, aimDirX_);
+	weaponModel_->SetRotate({ 0.0f, 0.0f, aimAngle });
+	weaponModel_->SetTranslate({
+		position_.x + aimDirX_ * kHandForward,
+		position_.y + aimDirY_ * kHandForward + kHandUp,
+		position_.z });
+	weaponModel_->Update();
+}
+
+void Character::DrawWeaponModel(DirectXCore* dxCore) {
+	if (weaponModel_) {
+		weaponModel_->Draw(dxCore);
 	}
 }
 
