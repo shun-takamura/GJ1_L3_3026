@@ -7,6 +7,7 @@
 #include "ControllerInput.h"
 #include "Object3DManager.h"
 #include "LightManager.h"
+#include "DirectXCore.h"
 #include "TextRenderer.h"
 #include "WindowsApplication.h"
 #include "TimeGroup.h"
@@ -162,10 +163,12 @@ void GameScene::Initialize() {
 	player_ = std::make_unique<Character>();
 	player_->Initialize(camera_.get(), "Player", playerSpawn_);
 	player_->SetStage(stage_.get());
+	player_->SetWeaponRenderContext(object3DManager_, dxCore_);
 
 	enemy_ = std::make_unique<Character>();
 	enemy_->Initialize(camera_.get(), "Enemy", enemySpawn_);
 	enemy_->SetStage(stage_.get());
+	enemy_->SetWeaponRenderContext(object3DManager_, dxCore_);
 
 	// 敵 AI と学習モデル。GameScene は Think() の結果を Character へ渡すだけ。
 	enemyBrain_ = std::make_unique<EnemyBrain>();
@@ -565,11 +568,17 @@ void GameScene::SpawnFlyingObject(const ProjectileSpawnRequest& spec, Character*
 	PrimitiveInstance::PrimitiveType visualType, const Vector3& visualScale, const char* name,
 	std::unique_ptr<Weapon> thrownWeaponPayload) {
 	// 銃弾・投げ武器どちらも ArcingProjectile 1つで表現しているので(クラス冒頭コメント参照)、
-	// 見た目(visualType/visualScale)以外はここで分岐する必要が無い。
-	// (実際の武器モデルを表示する Object3DInstance 版を試したが、Object3D描画パイプラインの
-	// 配線でGPUハング(TDR)を起こす未解決の問題がありプリミティブ表示に戻している)
+	// 見た目以外はここで分岐する必要が無い。投げ武器のときだけ実際の武器モデルを渡し、
+	// 銃弾のときは modelDir を空にしてプリミティブ(球)表示にする。
+	std::string modelDir, modelFile;
+	if (thrownWeaponPayload) {
+		modelDir = thrownWeaponPayload->GetModelDirectory();
+		modelFile = thrownWeaponPayload->GetModelFileName();
+	}
+
 	auto obj = std::make_unique<ArcingProjectile>();
-	obj->Initialize(camera_.get(), name, spec, owner, stage_.get(), visualType, visualScale);
+	obj->Initialize(camera_.get(), name, spec, owner, stage_.get(), visualType, visualScale,
+		object3DManager_, dxCore_, modelDir, modelFile);
 	if (thrownWeaponPayload) {
 		obj->SetThrownWeaponPayload(std::move(thrownWeaponPayload));
 	}
@@ -602,7 +611,7 @@ void GameScene::UpdateFlyingObjects(float dt) {
 		std::unique_ptr<Weapon> droppedWeapon = obj->TakeThrownWeaponPayload();
 		if (droppedWeapon && droppedWeapon->GetRemainingAmmo() > 0) {
 			auto pickup = std::make_unique<WeaponPickup>();
-			pickup->Initialize(camera_.get(), obj->GetPosition(), std::move(droppedWeapon));
+			pickup->Initialize(camera_.get(), object3DManager_, dxCore_, obj->GetPosition(), std::move(droppedWeapon));
 			pickups_.push_back(std::move(pickup));
 		}
 		// droppedWeapon が nullptr(銃弾だった)か残弾0の場合は、ここでスコープを抜けて破棄される。
@@ -664,19 +673,43 @@ void GameScene::UpdateWeaponSpawner(float dt) {
 	const Vector3 spawnPos = candidates[static_cast<size_t>(rng.NextInt(0, static_cast<int>(candidates.size()) - 1))];
 
 	auto pickup = std::make_unique<WeaponPickup>();
-	pickup->Initialize(camera_.get(), spawnPos, CreateRandomWeapon());
+	pickup->Initialize(camera_.get(), object3DManager_, dxCore_, spawnPos, CreateRandomWeapon());
 	pickups_.push_back(std::move(pickup));
 }
 
 void GameScene::Draw() {
+	//===================================
+	// プリミティブ相当(ステージ・キャラ本体・弾)。
+	// 各 Draw() が内部で PrimitivePipeline を貼り直すので順序の制約は無い。
+	//===================================
 	if (stage_) stage_->Draw();
 	if (player_) player_->Draw();
 	if (enemy_) enemy_->Draw();
 	for (auto& pickup : pickups_) {
-		pickup->Draw();
+		pickup->Draw();                 // モデルが読めなかったときのフォールバックの箱のみ
 	}
 	for (auto& obj : flyingObjects_) {
-		obj->Draw();
+		obj->Draw();                    // 銃弾のプリミティブのみ(投げ武器モデルは下の Object3D パス)
+	}
+
+	//===================================
+	// 武器モデル(Object3D パス)。
+	// Object3DManager::DrawSetting でルートシグネチャ/PSO/シャドウ/フォグを、
+	// LightManager::BindLights で b1/b3/b4(平行光源/点光源/スポット)をまとめて設定してから
+	// 各 Object3DInstance を描く(CG2_0_1 StagePlayScene::Draw と同じ順序。
+	// Object3DInstance::Draw はライトを bind しないため、ここで一括設定しないと GBV #935 になる)。
+	//===================================
+	if (object3DManager_ && dxCore_) {
+		object3DManager_->DrawSetting();
+		LightManager::GetInstance()->BindLights(dxCore_->GetCommandList());
+		for (auto& pickup : pickups_) {
+			pickup->DrawModel(dxCore_);
+		}
+		for (auto& obj : flyingObjects_) {
+			obj->DrawModel(dxCore_);
+		}
+		if (player_) player_->DrawWeaponModel(dxCore_);
+		if (enemy_) enemy_->DrawWeaponModel(dxCore_);
 	}
 
 	//===================================

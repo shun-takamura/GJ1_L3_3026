@@ -11,6 +11,9 @@ class Camera;
 class IStageQuery;
 class Character;
 class Weapon;
+class Object3DManager;
+class Object3DInstance;
+class DirectXCore;
 
 /// <summary>
 /// 銃弾・投げ捨てた武器に共通する「初速+重力で放物線を飛び、キャラに当たるか
@@ -26,9 +29,8 @@ class Weapon;
 /// 無関係な、GameScene が明示的に Update/命中判定を呼ぶだけの軽量な実体
 /// (06_Collision.md が言う「CollisionSystem の総当たりに乗せない」パターン)。
 ///
-/// 見た目はプリミティブ固定(Object3DInstance で実際の武器モデルを表示する試みを
-/// 一度行ったが、Object3D描画パイプラインの配線でGPUハング(TDR)を起こす未解決の
-/// 問題があり、いったん見送っている)。
+/// 見た目は、投げ捨てた武器なら実際の武器モデル(Object3DInstance)、銃弾なら
+/// プリミティブ(小さい球)。モデル指定が無い/読めない場合はプリミティブへフォールバックする。
 /// </summary>
 class ArcingProjectile {
 public:
@@ -38,15 +40,24 @@ public:
 	/// <param name="spec">初期位置・初速・重力倍率・当たり判定半径・寿命・ダメージ・ノックバックのまとめ</param>
 	/// <param name="owner">発射/投擲した本人。命中判定から除外するために覚えておく(自分の弾が自分に当たらないように)</param>
 	/// <param name="stage">地形問い合わせ先。nullptr なら地形判定はスキップする(寿命切れでのみ消える)</param>
-	/// <param name="visualType">見た目に使うプリミティブの種類(銃弾は小さい球、投げ武器は箱、など呼び出し側が決める)</param>
-	/// <param name="visualScale">見た目のスケール</param>
+	/// <param name="visualType">フォールバック時に使うプリミティブの種類(銃弾は小さい球、投げ武器は箱)</param>
+	/// <param name="visualScale">フォールバック時の見た目のスケール</param>
+	/// <param name="object3DManager">武器モデル描画用の共通マネージャ(投げ武器のときのみ使う。nullptr 可)</param>
+	/// <param name="dxCore">モデルのリソース生成に要る(nullptr ならモデルを作らずプリミティブ表示)</param>
+	/// <param name="modelDir">武器モデルのディレクトリ("Resources/Models/Pistol" 等)。空なら常にプリミティブ表示</param>
+	/// <param name="modelFile">武器モデルのメッシュ名("Pistol.mesh" 等)。modelDir が空なら意味を持たない</param>
 	void Initialize(Camera* camera, const std::string& name, const ProjectileSpawnRequest& spec,
 		Character* owner, const IStageQuery* stage,
-		PrimitiveInstance::PrimitiveType visualType, const Vector3& visualScale);
+		PrimitiveInstance::PrimitiveType visualType, const Vector3& visualScale,
+		Object3DManager* object3DManager = nullptr, DirectXCore* dxCore = nullptr,
+		const std::string& modelDir = "", const std::string& modelFile = "");
 	void Finalize();
 
 	void Update(float dt);
 	void Draw();
+
+	/// <summary>武器モデル(Object3D)を描画する。GameScene が Object3DManager::DrawSetting 後にまとめて呼ぶ。</summary>
+	void DrawModel(DirectXCore* dxCore);
 
 	/// <summary>命中/寿命切れ/地形衝突のいずれかで消滅したか。true になったら GameScene がリストから除去する。</summary>
 	bool IsDead() const { return dead_; }
@@ -83,7 +94,9 @@ private:
 	Camera* camera_ = nullptr;
 	const IStageQuery* stage_ = nullptr;
 	Character* owner_ = nullptr;
-	std::unique_ptr<PrimitiveInstance> visual_;
+	std::unique_ptr<PrimitiveInstance> visual_;      // 銃弾・フォールバック用のプリミティブ
+	std::unique_ptr<Object3DInstance> model_;        // 投げ武器の実モデル(読み込めた場合のみ)
+	float spinAngle_ = 0.0f;                         // 飛行中の見た目の回転(モデルのみ)
 
 	Vector3 position_{};
 	float velocityX_ = 0.0f;
