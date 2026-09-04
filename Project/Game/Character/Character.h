@@ -12,6 +12,9 @@
 class Camera;
 class IStageQuery;
 class Weapon;
+class Object3DManager;
+class Object3DInstance;
+class DirectXCore;
 
 /// <summary>
 /// 対戦キャラクターの共通実装(プレイヤー・AI 兼用)。
@@ -72,6 +75,12 @@ public:
 	void Finalize();
 
 	/// <summary>
+	/// 装備中の武器を3Dモデルで手元に表示するために必要な描画コンテキストを渡す。
+	/// GameScene が Initialize 直後に一度呼ぶ(未設定なら手元の武器モデルは表示されないだけ)。
+	/// </summary>
+	void SetWeaponRenderContext(Object3DManager* object3DManager, DirectXCore* dxCore);
+
+	/// <summary>
 	/// 毎フレーム更新。すべての引数は「もう解決済みの意図」であり、Update 自身は
 	/// キーボードやゲームパッドの状態を一切読まない(クラス冒頭のコメント参照)。
 	/// </summary>
@@ -91,6 +100,12 @@ public:
 
 	/// <summary>見た目(Box)を描画する。当たり判定のデバッグ描画は CollisionSystem 側が別途行う。</summary>
 	void Draw();
+
+	/// <summary>
+	/// 装備中の武器の3Dモデルを手元に描画する。GameScene が Object3DManager::DrawSetting 後に呼ぶ
+	/// (素手・モデル未設定・コンテキスト未設定なら何もしない)。
+	/// </summary>
+	void DrawWeaponModel(DirectXCore* dxCore);
 
 	//====================
 	// 外部インターフェース
@@ -237,6 +252,12 @@ private:
 	/// </summary>
 	void ResolveBodyBlock(IImGuiEditable* other);
 
+	/// <summary>
+	/// 装備中の武器に応じて手元の武器モデル(weaponModel_)を作り直し/破棄し、
+	/// 照準方向へ向けて位置・回転を更新する。Update() の末尾で毎フレーム呼ぶ。
+	/// </summary>
+	void UpdateWeaponModel();
+
 	std::string name_;
 	Camera* camera_ = nullptr;
 	const IStageQuery* stage_ = nullptr; // 地形当たり判定の問い合わせ先(未設定なら平床フォールバック)
@@ -259,6 +280,11 @@ private:
 
 	// ---- 武器 ----
 	std::unique_ptr<Weapon> equippedWeapon_;                    // 常に何かしらの Weapon を指している(素手も Weapon の一種)
+	// 手元に表示する武器モデル。素手やモデルの無い武器のときは nullptr。
+	Object3DManager* object3DManager_ = nullptr;                // 武器モデル描画用(SetWeaponRenderContext で注入)
+	DirectXCore* weaponModelDxCore_ = nullptr;                  // 同上。モデルのリソース生成に要る
+	std::unique_ptr<Object3DInstance> weaponModel_;
+	std::string weaponModelKey_;                                // 今 weaponModel_ が表しているモデル("dir/file")。持ち替え検出に使う
 	std::vector<ProjectileSpawnRequest> pendingProjectileSpawns_; // 今フレーム発射が成立した弾のリクエスト(ショットガンは複数)
 	bool hasPendingThrow_ = false;        // 今フレーム投げ捨てが成立し、ConsumePendingThrow待ちか
 	ProjectileSpawnRequest pendingThrow_{}; // hasPendingThrow_ が true のときだけ有効な内容

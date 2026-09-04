@@ -7,6 +7,7 @@
 #include "Character/Character.h"
 #include "Common/IStageQuery.h"
 #include "Weapon.h"
+#include "Object3DInstance.h"
 
 namespace {
 	// Character::kGravity と同じ値。世界の重力を1箇所にまとめられないか迷ったが、
@@ -20,7 +21,9 @@ ArcingProjectile::~ArcingProjectile() = default;
 
 void ArcingProjectile::Initialize(Camera* camera, const std::string& name, const ProjectileSpawnRequest& spec,
 	Character* owner, const IStageQuery* stage,
-	PrimitiveInstance::PrimitiveType visualType, const Vector3& visualScale) {
+	PrimitiveInstance::PrimitiveType visualType, const Vector3& visualScale,
+	Object3DManager* object3DManager, DirectXCore* dxCore,
+	const std::string& modelDir, const std::string& modelFile) {
 	camera_ = camera;
 	stage_ = stage;
 	owner_ = owner;
@@ -42,15 +45,26 @@ void ArcingProjectile::Initialize(Camera* camera, const std::string& name, const
 	damageFalloffRange_ = spec.damageFalloffRange;
 	minDamageMultiplier_ = spec.minDamageMultiplier;
 
-	visual_ = std::make_unique<PrimitiveInstance>();
-	visual_->Initialize(visualType, name);
-	visual_->SetCamera(camera_);
-	visual_->SetScale(visualScale);
-	visual_->SetTranslate(position_);
+	// 投げ武器でモデル指定があればモデルを、無ければ(＝銃弾)プリミティブを見た目にする。
+	if (object3DManager && dxCore && !modelDir.empty() && !modelFile.empty()) {
+		model_ = std::make_unique<Object3DInstance>();
+		model_->Initialize(object3DManager, dxCore, modelDir, modelFile, name);
+		model_->SetCamera(camera_);
+		model_->SetScale({ 1.0f, 1.0f, 1.0f });
+		model_->SetTranslate(position_);
+		model_->Update();
+	} else {
+		visual_ = std::make_unique<PrimitiveInstance>();
+		visual_->Initialize(visualType, name);
+		visual_->SetCamera(camera_);
+		visual_->SetScale(visualScale);
+		visual_->SetTranslate(position_);
+	}
 }
 
 void ArcingProjectile::Finalize() {
 	visual_.reset();
+	model_.reset();
 }
 
 void ArcingProjectile::Update(float dt) {
@@ -127,11 +141,23 @@ void ArcingProjectile::Update(float dt) {
 		visual_->SetTranslate(position_);
 		visual_->Update();
 	}
+	if (model_) {
+		spinAngle_ += 6.0f * dt; // 投げた武器がくるくる回りながら飛ぶ
+		model_->SetTranslate(position_);
+		model_->SetRotate({ 0.0f, 0.0f, spinAngle_ });
+		model_->Update();
+	}
 }
 
 void ArcingProjectile::Draw() {
 	if (visual_ && !dead_) {
 		visual_->Draw();
+	}
+}
+
+void ArcingProjectile::DrawModel(DirectXCore* dxCore) {
+	if (model_ && !dead_) {
+		model_->Draw(dxCore);
 	}
 }
 
