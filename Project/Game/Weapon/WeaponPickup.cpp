@@ -6,6 +6,7 @@
 #include "Weapon.h"
 #include "Common/IStageQuery.h"
 #include "Object3DInstance.h"
+#include "Log.h"
 
 namespace {
 	// 地面に置いた武器モデルの見た目調整。実機で武器モデルの実寸を見てから詰める。
@@ -29,6 +30,9 @@ void WeaponPickup::Initialize(Camera* camera, Object3DManager* object3DManager, 
 	const std::string dir = weapon_->GetModelDirectory();
 	const std::string file = weapon_->GetModelFileName();
 	if (object3DManager && dxCore && !dir.empty() && !file.empty()) {
+		// クラッシュ調査用: 落ちたときにどの武器のどのモデルを読もうとしていたか出力に残す
+		// (Object3DInstance::Initialize 内部はソース非公開でここより先が追えないため)。
+		Log("WeaponPickup: loading model weapon=" + weapon_->GetName() + " dir=" + dir + " file=" + file + "\n");
 		model_ = std::make_unique<Object3DInstance>();
 		model_->Initialize(object3DManager, dxCore, dir, file, "WeaponPickup_" + weapon_->GetName());
 		model_->SetCamera(camera);

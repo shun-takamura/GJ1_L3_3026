@@ -8,6 +8,7 @@
 #include "Common/IStageQuery.h"
 #include "Weapon.h"
 #include "Object3DInstance.h"
+#include "Log.h"
 
 namespace {
 	// Character::kGravity と同じ値。世界の重力を1箇所にまとめられないか迷ったが、
@@ -47,6 +48,8 @@ void ArcingProjectile::Initialize(Camera* camera, const std::string& name, const
 
 	// 投げ武器でモデル指定があればモデルを、無ければ(＝銃弾)プリミティブを見た目にする。
 	if (object3DManager && dxCore && !modelDir.empty() && !modelFile.empty()) {
+		// クラッシュ調査用: WeaponPickup.cpp と同じ理由でログを残す。
+		Log("ArcingProjectile: loading model name=" + name + " dir=" + modelDir + " file=" + modelFile + "\n");
 		model_ = std::make_unique<Object3DInstance>();
 		model_->Initialize(object3DManager, dxCore, modelDir, modelFile, name);
 		model_->SetCamera(camera_);
