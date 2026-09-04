@@ -24,7 +24,13 @@
 #include "Weapon/Pistol.h"
 #include "Weapon/AssaultRifle.h"
 #include "Weapon/Shotgun.h"
+#include "Weapon/Blaster.h"
+#include "Weapon/GrenadeLauncher.h"
 #include "Log.h"
+
+#ifdef USE_IMGUI
+#include "imgui.h"
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -107,11 +113,14 @@ namespace {
 	/// <summary>0〜(count-1) の乱数で武器の種類を選び、フル装弾で1つ生成する。RandomGenerator 経由なので
 	/// リプレイのシード再現性を壊さない(11_Utilities.md、生の rand() は使わない)。</summary>
 	std::unique_ptr<Weapon> CreateRandomWeapon() {
-		const int kind = RandomGenerator::Instance().NextInt(0, 2);
+		const int kind = RandomGenerator::Instance().NextInt(0, 4);
 		switch (kind) {
 			case 0: return std::make_unique<Pistol>();
 			case 1: return std::make_unique<AssaultRifle>();
-			default: return std::make_unique<Shotgun>();
+			case 2: return std::make_unique<Shotgun>();
+            case 3: return std::make_unique<Blaster>();
+			case 4: return std::make_unique<GrenadeLauncher>();
+			default: return 0;
 		}
 	}
 }
@@ -178,6 +187,47 @@ void GameScene::Initialize() {
 
 	playerPoints_ = 0;
 	enemyPoints_ = 0;
+
+	//===================================
+	// デバッグ: 銃のパラメータをImGuiで調整できるようにする
+	//===================================
+#ifdef USE_IMGUI
+	// 各 Weapon::DrawImGuiTuning() が触るのは(インスタンスではなく)クラス単位で共有する
+	// static な値なので、ウィンドウの登録自体はプロセス中に1回で十分。GameScene::Initialize()
+	// はタイトルへ戻って再度ゲームに入るたびに呼ばれる可能性があるため、static ローカル変数で
+	// 二重登録(同じ名前のウィンドウが積み重なる)を防いでいる。
+	static bool weaponTuningWindowRegistered = false;
+	if (!weaponTuningWindowRegistered) {
+		weaponTuningWindowRegistered = true;
+		ImGuiManager::Instance().AddCallbackWindow("Weapon Tuning", []() {
+			if (ImGui::CollapsingHeader("Pistol")) {
+				ImGui::PushID("Pistol");
+				Pistol::DrawImGuiTuning();
+				ImGui::PopID();
+			}
+			if (ImGui::CollapsingHeader("AssaultRifle")) {
+				ImGui::PushID("AssaultRifle");
+				AssaultRifle::DrawImGuiTuning();
+				ImGui::PopID();
+			}
+			if (ImGui::CollapsingHeader("Shotgun")) {
+				ImGui::PushID("Shotgun");
+				Shotgun::DrawImGuiTuning();
+				ImGui::PopID();
+			}
+			if (ImGui::CollapsingHeader("Blaster")) {
+				ImGui::PushID("Blaster");
+				Blaster::DrawImGuiTuning();
+				ImGui::PopID();
+			}
+			if (ImGui::CollapsingHeader("GrenadeLauncher")) {
+				ImGui::PushID("GrenadeLauncher");
+				GrenadeLauncher::DrawImGuiTuning();
+				ImGui::PopID();
+			}
+		});
+	}
+#endif
 }
 
 void GameScene::Finalize() {
@@ -392,7 +442,7 @@ void GameScene::Update() {
 	// 武器拾得・ランダムスポーン
 	//===================================
 	for (auto& pickup : pickups_) {
-		pickup->Update(); // 位置は動かないが、WVP計算のため毎フレーム呼ぶ必要がある
+		pickup->Update(dt); // 着地するまでは重力で落下する(WeaponPickup.h の設計コメント参照)
 	}
 	TryPickUpWeapon(*player_);
 	TryPickUpWeapon(*enemy_);
@@ -588,17 +638,36 @@ void GameScene::SpawnFlyingObject(const ProjectileSpawnRequest& spec, Character*
 void GameScene::UpdateFlyingObjects(float dt) {
 	for (auto& obj : flyingObjects_) {
 		obj->Update(dt);
+		if (!obj->IsDead()) {
+			// 発射者自身には ArcingProjectile::TryHitCharacter 内で当たらないようになっている。
+			obj->TryHitCharacter(*player_);
+			obj->TryHitCharacter(*enemy_);
+			// 近接センサー判定(proximityRadius>0の弾のみ意味を持つ。グレネードランチャー専用)。
+			// 発射者自身はセンサー対象外(ArcingProjectile::TryProximityDetonate参照)。
+			if (!obj->IsDead()) {
+				obj->TryProximityDetonate(*player_);
+				obj->TryProximityDetonate(*enemy_);
+			}
+			// ここに来た時点で dead_ になっていれば、地形/寿命切れではなく「今フレーム
+			// どちらかのキャラに命中して消えた」ということ(Update() 内の地形/寿命判定は
+			// このブロックへ来る前に既に弾いているため)。ショットガンのように1トリガーで
+			// 複数弾出る武器で「実際に何発当たっているか」を目視確認できるようにする。
+			if (obj->IsDead()) {
+				AddDebugFlash(obj->GetPosition(), 0.25f, Vector4{ 0.2f, 1.0f, 0.2f, 1.0f }, 0.3f);
+			}
+		}
+
+		// 上の TryHitCharacter で今フレーム命中して死んだ場合も含めて、死因を問わず
+		// ここでまとめて後処理を行う(爆風武器は「地形に当たったから」ではなく
+		// 「死んだから」爆発してほしいので、DiedOnTerrain 判定より後段にまとめている)。
 		if (obj->IsDead()) {
-			// 地形に当たって消えた弾は、その位置の「壊れる床」を削る
-			// (プレイヤー・敵どちらの弾でも同じ。AI の「足場を撃って落とす」もこれで成立する)。
-			if (obj->DiedOnTerrain() && stage_) {
+			if (obj->GetBlastRadius() > 0.0f) {
+				ResolveExplosion(*obj);
+			} else if (obj->DiedOnTerrain() && stage_) {
+				// 爆風を持たない通常弾は今まで通り、着弾点だけの小さい範囲を削る。
 				stage_->DamageSphere(obj->GetPosition(), obj->GetRadius() * 1.5f, obj->GetDamage());
 			}
-			continue; // 命中判定を取る意味がない
 		}
-		// 発射者自身には ArcingProjectile::TryHitCharacter 内で当たらないようになっている。
-		obj->TryHitCharacter(*player_);
-		obj->TryHitCharacter(*enemy_);
 	}
 
 	// 消滅した物のうち、投げた武器の積み荷(残弾込み)を持っているものは、
@@ -611,7 +680,7 @@ void GameScene::UpdateFlyingObjects(float dt) {
 		std::unique_ptr<Weapon> droppedWeapon = obj->TakeThrownWeaponPayload();
 		if (droppedWeapon && droppedWeapon->GetRemainingAmmo() > 0) {
 			auto pickup = std::make_unique<WeaponPickup>();
-			pickup->Initialize(camera_.get(), object3DManager_, dxCore_, obj->GetPosition(), std::move(droppedWeapon));
+			pickup->Initialize(camera_.get(), object3DManager_, dxCore_, obj->GetPosition(), std::move(droppedWeapon), stage_.get());
 			pickups_.push_back(std::move(pickup));
 		}
 		// droppedWeapon が nullptr(銃弾だった)か残弾0の場合は、ここでスコープを抜けて破棄される。
@@ -622,6 +691,58 @@ void GameScene::UpdateFlyingObjects(float dt) {
 		std::remove_if(flyingObjects_.begin(), flyingObjects_.end(),
 			[](const std::unique_ptr<ArcingProjectile>& obj) { return obj->IsDead(); }),
 		flyingObjects_.end());
+}
+
+void GameScene::ResolveExplosion(const ArcingProjectile& obj) {
+	const Vector3 center = obj.GetPosition();
+	const float blastRadius = obj.GetBlastRadius();
+
+	// 爆風の届く範囲そのものを目視確認できるよう、爆心を中心に blastRadius の球を
+	// 少し長め(0.5秒)に表示する。通常の攻撃判定フラッシュ(kDebugFlashDuration=0.25秒)より
+	// 長くしているのは、爆風は一瞬で消えるヒットボックスと違い「どこまで届いたか」を
+	// 見て次の立ち回りを考えるための表示だから。
+	AddDebugFlash(center, blastRadius, Vector4{ 1.0f, 0.45f, 0.05f, 1.0f }, 0.5f);
+
+	// 地形は「着弾点だけ」ではなく爆風半径ぶんまとめて削る(通常弾の着弾チップ削りより
+	// 広い範囲。直撃/地形当たり/寿命切れのどれで死んだかは問わない)。
+	if (stage_) {
+		const int broke = stage_->DamageSphere(center, blastRadius, obj.GetDamage());
+		if (broke > 0) {
+			Log("爆発で壊れる床を破壊(" + std::to_string(broke) + ")\n");
+		}
+	}
+
+	// 発射者自身を含む全キャラクターへ、距離減衰させたダメージ/ノックバックを適用する。
+	// TryHitCharacter と違って owner を除外しない ── 「自分の爆風にも巻き込まれる」が
+	// このカテゴリの武器のリスクリワードそのものなので、ここでは意図的に区別しない。
+	ApplyBlastToCharacter(*player_, center, blastRadius, obj.GetDamage(), obj.GetKnockbackPower());
+	ApplyBlastToCharacter(*enemy_, center, blastRadius, obj.GetDamage(), obj.GetKnockbackPower());
+}
+
+void GameScene::ApplyBlastToCharacter(Character& target, const Vector3& center, float blastRadius,
+	float maxDamage, float maxKnockbackPower) {
+	const float dx = target.GetPosition().x - center.x;
+	const float dy = target.GetPosition().y - center.y;
+	const float dist = std::sqrt(dx * dx + dy * dy);
+	if (dist >= blastRadius) {
+		return; // 爆風の範囲外
+	}
+
+	// 爆心(dist=0)で 1.0、爆風の端(dist=blastRadius)で 0.0 になる線形減衰。
+	// 「近いほど強い」を素直に表現できればよいので、今のところこれ以上凝った
+	// カーブ(二乗減衰など)にはしていない。
+	const float falloff = 1.0f - (dist / blastRadius);
+
+	Character::AttackHitbox hitbox;
+	hitbox.center = center;
+	hitbox.radius = blastRadius; // ReceiveHit 内の球vsカプセル判定にそのまま爆風半径を使う
+	hitbox.damage = maxDamage * falloff;
+	hitbox.knockbackPower = maxKnockbackPower * falloff;
+	// 爆心から見て自分がどちら側にいるかで、外向きに吹き飛ぶ方向を決める
+	// (弾の飛行方向を使う通常弾の knockbackDirX とは考え方が異なる点に注意)。
+	hitbox.knockbackDirX = (dx >= 0.0f) ? 1.0f : -1.0f;
+
+	target.ReceiveHit(hitbox);
 }
 
 void GameScene::TryPickUpWeapon(Character& character) {
@@ -673,7 +794,7 @@ void GameScene::UpdateWeaponSpawner(float dt) {
 	const Vector3 spawnPos = candidates[static_cast<size_t>(rng.NextInt(0, static_cast<int>(candidates.size()) - 1))];
 
 	auto pickup = std::make_unique<WeaponPickup>();
-	pickup->Initialize(camera_.get(), object3DManager_, dxCore_, spawnPos, CreateRandomWeapon());
+	pickup->Initialize(camera_.get(), object3DManager_, dxCore_, spawnPos, CreateRandomWeapon(), stage_.get());
 	pickups_.push_back(std::move(pickup));
 }
 

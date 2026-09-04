@@ -1,5 +1,9 @@
 #include "Pistol.h"
 
+#ifdef USE_IMGUI
+#include "imgui.h"
+#endif
+
 /// <summary>
 /// クールダウン・残弾を見て、撃てるなら弾1発ぶんの ProjectileSpawnRequest を組み立てて
 /// outSpawns に積む。実際に弾(ArcingProjectile)を生成するのは GameScene 側の仕事で、
@@ -38,4 +42,19 @@ bool Pistol::TryRangedAttack(float dt, bool triggered, bool held, const Vector3&
 	spawn.knockbackPower = kKnockbackPower; // 命中時のノックバックの大きさ
 	outSpawns.push_back(spawn);
 	return true;
+}
+
+void Pistol::DrawImGuiTuning() {
+#ifdef USE_IMGUI
+	ImGui::DragInt("Starting Ammo", &kStartingAmmo, 1.0f, 1, 99);
+	ImGui::DragFloat("Cooldown (s)", &kCooldown, 0.01f, 0.05f, 3.0f);
+	ImGui::DragFloat("Muzzle Speed", &kMuzzleSpeed, 0.1f, 1.0f, 40.0f);
+	ImGui::DragFloat("Gravity Scale", &kGravityScale, 0.05f, 0.0f, 3.0f);
+	ImGui::DragFloat("Bullet Radius", &kRadius, 0.01f, 0.01f, 1.0f);
+	ImGui::DragFloat("Life Time (s)", &kLifeTime, 0.05f, 0.1f, 10.0f);
+	ImGui::Separator();
+	ImGui::DragFloat("Damage", &kDamage, 0.5f, 0.0f, 100.0f);
+	ImGui::DragFloat("Knockback Power", &kKnockbackPower, 0.5f, 0.0f, 50.0f);
+	ImGui::DragFloat("Recoil Power", &kRecoilPower, 0.5f, 0.0f, 50.0f);
+#endif
 }

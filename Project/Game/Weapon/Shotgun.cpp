@@ -2,6 +2,10 @@
 
 #include <cmath>
 
+#ifdef USE_IMGUI
+#include "imgui.h"
+#endif
+
 /// <summary>
 /// クールダウン・残弾を見て、撃てるなら kPelletCount 発ぶんの ProjectileSpawnRequest
 /// (扇状に散らしたペレット)を一度に outSpawns へ積む。弾数消費(--ammo_)は
@@ -45,7 +49,28 @@ bool Shotgun::TryRangedAttack(float dt, bool triggered, bool held, const Vector3
 		spawn.lifeTime = kLifeTime;         // 短射程(すぐ寿命切れで消える)
 		spawn.damage = kDamagePerPellet;    // 1ペレットぶんのダメージ(全弾命中なら合計は高威力)
 		spawn.knockbackPower = kKnockbackPower;
+		spawn.damageFalloffRange = kDamageFalloffRange; // 至近距離特化: 遠距離ほどダメージが落ちる
+		spawn.minDamageMultiplier = kMinDamageMultiplier;
 		outSpawns.push_back(spawn);
 	}
 	return true;
+}
+
+void Shotgun::DrawImGuiTuning() {
+#ifdef USE_IMGUI
+	ImGui::DragInt("Starting Ammo", &kStartingAmmo, 1.0f, 1, 30);
+	ImGui::DragInt("Pellet Count", &kPelletCount, 1.0f, 1, 20);
+	ImGui::DragFloat("Spread Angle (rad)", &kSpreadAngleRad, 0.01f, 0.0f, 1.5f);
+	ImGui::DragFloat("Cooldown (s)", &kCooldown, 0.01f, 0.05f, 3.0f);
+	ImGui::DragFloat("Muzzle Speed", &kMuzzleSpeed, 0.1f, 1.0f, 40.0f);
+	ImGui::DragFloat("Gravity Scale", &kGravityScale, 0.05f, 0.0f, 3.0f);
+	ImGui::DragFloat("Pellet Radius", &kRadius, 0.01f, 0.01f, 1.0f);
+	ImGui::DragFloat("Life Time (s)", &kLifeTime, 0.05f, 0.1f, 10.0f);
+	ImGui::Separator();
+	ImGui::DragFloat("Damage / Pellet", &kDamagePerPellet, 0.5f, 0.0f, 50.0f);
+	ImGui::DragFloat("Knockback Power", &kKnockbackPower, 0.5f, 0.0f, 50.0f);
+	ImGui::DragFloat("Recoil Power", &kRecoilPower, 0.5f, 0.0f, 50.0f);
+	ImGui::DragFloat("Damage Falloff Range", &kDamageFalloffRange, 0.1f, 0.0f, 20.0f);
+	ImGui::DragFloat("Min Damage Multiplier", &kMinDamageMultiplier, 0.02f, 0.0f, 1.0f);
+#endif
 }

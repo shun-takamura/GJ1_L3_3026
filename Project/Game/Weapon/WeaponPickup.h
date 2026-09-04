@@ -8,6 +8,7 @@
 
 class Camera;
 class Weapon;
+class IStageQuery;
 class Object3DManager;
 class Object3DInstance;
 class DirectXCore;
@@ -31,7 +32,7 @@ public:
 	/// <param name="object3DManager">武器モデル描画に使う共通マネージャ(GameScene が Scene 基底から渡す)。</param>
 	/// <param name="dxCore">同上。モデルのリソース生成に要る。</param>
 	void Initialize(Camera* camera, Object3DManager* object3DManager, DirectXCore* dxCore,
-		const Vector3& position, std::unique_ptr<Weapon> weapon);
+		const Vector3& position, std::unique_ptr<Weapon> weapon, const IStageQuery* stage);
 	void Finalize();
 
 	/// <summary>毎フレーム呼ぶ。位置自体は動かないが、WVP計算(カメラ行列の反映)のため呼び続ける必要がある。</summary>
@@ -52,9 +53,19 @@ public:
 	std::unique_ptr<Weapon> TakeWeapon();
 
 private:
+	// 落下シミュレーション用の当たり判定半サイズ(見た目のBoxスケール{0.5,0.3,0.5}の半分)。
+	// Character::MoveAabb と同じ仕組みを再利用するための、この見た目に合わせたAABBサイズ。
+	static constexpr Vector3 kHalfExtent{ 0.25f, 0.15f, 0.25f };
+	static constexpr float kGravity = -20.0f; // Character ほど速く落ちなくてよいので少し緩め
+
 	Vector3 position_{};
 	float spinAngle_ = 0.0f; // 置いてある武器がゆっくり回って目を引くための Y 回転(見た目だけ)
+  
 	std::unique_ptr<Weapon> weapon_;
 	std::unique_ptr<Object3DInstance> model_;   // 実際の武器モデル。読み込めた場合はこちらを描く
 	std::unique_ptr<PrimitiveInstance> visual_; // モデルが無い/読めないときのフォールバックの箱
+  
+	const IStageQuery* stage_ = nullptr;
+	float verticalVelocity_ = 0.0f;
+	bool grounded_ = false;
 };
