@@ -80,6 +80,9 @@
     <ClCompile Include="Weapon\HandCannon.cpp">
       <Filter>Weapon</Filter>
     </ClCompile>
+    <ClCompile Include="Weapon\RicochetRifle.cpp">
+      <Filter>Weapon</Filter>
+    </ClCompile>
     <ClCompile Include="Weapon\ArcingProjectile.cpp">
       <Filter>Weapon</Filter>
     </ClCompile>
@@ -177,6 +180,9 @@
       <Filter>Weapon</Filter>
     </ClInclude>
     <ClInclude Include="Weapon\HandCannon.h">
+      <Filter>Weapon</Filter>
+    </ClInclude>
+    <ClInclude Include="Weapon\RicochetRifle.h">
       <Filter>Weapon</Filter>
     </ClInclude>
     <ClInclude Include="Weapon\ArcingProjectile.h">

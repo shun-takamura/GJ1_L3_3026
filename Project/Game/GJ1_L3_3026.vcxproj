@@ -134,6 +134,7 @@
     <ClCompile Include="Weapon\SniperRifle.cpp" />
     <ClCompile Include="Weapon\Minigun.cpp" />
     <ClCompile Include="Weapon\HandCannon.cpp" />
+    <ClCompile Include="Weapon\RicochetRifle.cpp" />
     <ClCompile Include="Weapon\ArcingProjectile.cpp" />
     <ClCompile Include="Weapon\WeaponPickup.cpp" />
     <ClCompile Include="AI\AIPerception.cpp" />
@@ -169,6 +170,7 @@
     <ClInclude Include="Weapon\SniperRifle.h" />
     <ClInclude Include="Weapon\Minigun.h" />
     <ClInclude Include="Weapon\HandCannon.h" />
+    <ClInclude Include="Weapon\RicochetRifle.h" />
     <ClInclude Include="Weapon\ArcingProjectile.h" />
     <ClInclude Include="Weapon\WeaponPickup.h" />
   </ItemGroup>

@@ -42,6 +42,8 @@ void ArcingProjectile::Initialize(Camera* camera, const std::string& name, const
 	bounces_ = spec.bounces;
 	wallRestitution_ = spec.wallRestitution;
 	floorRestitution_ = spec.floorRestitution;
+	maxBounces_ = spec.maxBounces;
+	bounceCount_ = 0;
 	proximityRadius_ = spec.proximityRadius;
 	damageFalloffRange_ = spec.damageFalloffRange;
 	minDamageMultiplier_ = spec.minDamageMultiplier;
@@ -117,18 +119,30 @@ void ArcingProjectile::Update(float dt) {
 		const StageMoveResult mv = stage_->MoveAabb(position_, to, half);
 		position_ = mv.position;
 
+		// 反射回数の上限(maxBounces_>0)に達した後は、壁/床に触れても反射せずそのまま着弾させる
+		// (リコシェットライフルの「反射は3回まで」用。上限が無い(0)グレラン・投げ捨て武器は
+		// bounceExhausted_ が常にfalseのまま=今までどおり無制限に反射し続ける)。
+		const bool bounceExhausted = (maxBounces_ > 0 && bounceCount_ >= maxBounces_);
+
 		if (mv.hitWall) {
+			if (bounceExhausted) {
+				dead_ = true;
+				diedOnTerrain_ = true;
+				return;
+			}
 			velocityX_ = -velocityX_ * wallRestitution_;
+			++bounceCount_;
 		}
 		if (mv.hitCeiling && velocityY_ > 0.0f) {
 			velocityY_ = 0.0f; // 天井バウンドは狙わないシンプルな割り切り(押し返すだけ)
 		}
 		if (mv.grounded) {
-			if (floorRestitution_ > 0.0f) {
-				velocityY_ = -velocityY_ * floorRestitution_; // 床でも跳ね続ける(グレラン)
+			if (floorRestitution_ > 0.0f && !bounceExhausted) {
+				velocityY_ = -velocityY_ * floorRestitution_; // 床でも跳ね続ける(グレラン/リコシェットライフル)
+				++bounceCount_;
 			} else {
 				velocityY_ = 0.0f;
-				dead_ = true; // 着地確定=静止(投げ捨てた武器はここで初めて死ぬ)
+				dead_ = true; // 着地確定=静止(投げ捨てた武器・反射回数を使い切った弾はここで死ぬ)
 				diedOnTerrain_ = true;
 				return;
 			}

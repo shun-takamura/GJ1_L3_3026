@@ -110,6 +110,22 @@ def add_ring(x: float, y: float, major_r: float, minor_r: float, name: str = "Gu
     return obj
 
 
+def add_disc(x: float, y0: float, y1: float, radius: float, z: float = 0.0,
+             verts: int = 16, name: str = "Disc"):
+    """Y軸(上方向)に沿って y0→y1 まで積み上がる、地面に寝かせて置く円盤/パック状のパーツ。
+    Mine のような「構えず地面に置くだけの武器」用。回転を一切かけない ── 円柱の既定軸
+    (ローカルZ)がそのままBlenderのZ軸=file座標系のY軸(上)に一致するので、
+    add_cylinder_x/add_cone_x と違い90度回転が要らない。"""
+    height = y1 - y0
+    cy = (y0 + y1) * 0.5
+    bx, by, bz = _to_blender(x, cy, z)
+    bpy.ops.mesh.primitive_cylinder_add(vertices=verts, radius=radius, depth=height, location=(bx, by, bz))
+    obj = bpy.context.active_object
+    obj.name = name
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+    return obj
+
+
 def build_pistol():
     """単発拳銃。他の全武器より一回り小さい・シンプルというのが最大の識別要素
     (マガジン・ストック・フォアグリップの類を一切持たない、素の小型サイドアーム)。"""
@@ -253,6 +269,58 @@ def build_hand_cannon():
     return parts, "HandCannon"
 
 
+def build_rocket_launcher():
+    """山なりに飛んで着弾点周囲を広範囲破壊するロケット弾。GrenadeLauncherと違い
+    肩撃ち式バズーカ/RPG然としたシルエットにする ── 銃口側ではなく「後端」が
+    朝顔状に開く(発射時の後方排気を連想させる)のが最大の識別要素。Blaster(銃口が開く)
+    ともGrenadeLauncher(前方の薬室バルジ)とも逆側が膨らむので混同しない。
+    さらにチューブの前端からロケット弾頭の先端が覗いているディテールを追加。"""
+    parts = [
+        add_cylinder_x(-0.35, 0.55, 0.11, y=0.075, verts=10, name="Tube"),
+        add_cone_x(-0.55, -0.35, 0.17, 0.11, y=0.075, verts=10, name="RearFlare"),
+        add_cone_x(0.55, 0.66, 0.055, 0.012, y=0.075, verts=8, name="RocketNose"),
+        add_box((0.0, 0.20, 0.0), (0.06, 0.05, 0.03), "Sight"),
+        add_box((0.05, -0.09, 0.0), (0.12, 0.28, 0.12), "Grip", rot_z_deg=-12.0),
+        add_ring(0.05, 0.00, 0.05, 0.009, "Guard"),
+        add_box((-0.42, -0.03, 0.0), (0.12, 0.10, 0.10), "ShoulderPad"),
+    ]
+    return parts, "RocketLauncher"
+
+
+def build_ricochet_rifle():
+    """壁で跳ね返り続ける(爆発なし)ライフル。他のどの武器にも無い、上面のジグザグの
+    レール(3本の板を互い違いの角度で組んだ、跳弾の軌道を連想させる意匠)が最大の識別要素。
+    銃身の先端はやや太いコンペンセイター状に終わらせ、AssaultRifle/SniperRifleの
+    素っ気ない銃口と差別化。ストックは短く体に密着させたブルパップ寄りの構成にして
+    全長を中程度に抑える。"""
+    parts = [
+        add_box((0.0, 0.065, 0.0), (0.60, 0.13, 0.10), "Receiver"),
+        add_cylinder_x(0.28, 0.75, 0.028, y=0.065, verts=8, name="Barrel"),
+        add_cylinder_x(0.75, 0.82, 0.04, y=0.065, verts=8, name="Compensator"),
+        add_box((-0.05, 0.16, 0.0), (0.18, 0.025, 0.03), "ZigzagA", rot_z_deg=18.0),
+        add_box((0.13, 0.19, 0.0), (0.18, 0.025, 0.03), "ZigzagB", rot_z_deg=-18.0),
+        add_box((0.31, 0.16, 0.0), (0.18, 0.025, 0.03), "ZigzagC", rot_z_deg=18.0),
+        add_box((-0.06, -0.16, 0.0), (0.11, 0.32, 0.09), "Grip", rot_z_deg=-14.0),
+        add_ring(0.0, -0.02, 0.05, 0.009, "Guard"),
+        add_box((-0.45, 0.06, 0.0), (0.35, 0.11, 0.08), "Stock"),
+        add_box((-0.65, 0.06, 0.0), (0.04, 0.13, 0.09), "ButtCap"),
+    ]
+    return parts, "RicochetRifle"
+
+
+def build_mine():
+    """設置・時限/接触起爆のマイン。構えて撃つ武器ではないので、他の全武器と違い
+    前方軸を持たない ── 地面に寝かせて置く円盤(パック)状にする。add_boxやadd_cylinder_xの
+    ような「前方に長い」形状を一切使わず、add_diskだけで積み上げて作る唯一の武器。"""
+    parts = [
+        add_disc(0.0, 0.0, 0.06, 0.14, verts=16, name="Body"),
+        add_disc(0.0, -0.01, 0.005, 0.155, verts=16, name="Rim"),
+        add_disc(0.0, 0.06, 0.09, 0.05, verts=12, name="Button"),
+        add_disc(0.0, 0.09, 0.15, 0.008, verts=6, name="Antenna"),
+    ]
+    return parts, "Mine"
+
+
 WEAPON_BUILDERS = {
     "Pistol": build_pistol,
     "Shotgun": build_shotgun,
@@ -262,6 +330,9 @@ WEAPON_BUILDERS = {
     "SniperRifle": build_sniper_rifle,
     "Minigun": build_minigun,
     "HandCannon": build_hand_cannon,
+    "RocketLauncher": build_rocket_launcher,
+    "RicochetRifle": build_ricochet_rifle,
+    "Mine": build_mine,
 }
 
 # newmtl の Kd(拡散色)。他は既存踏襲のニュートラルグレーのままだが、
@@ -276,6 +347,9 @@ WEAPON_KD = {
     "SniperRifle": (0.22, 0.26, 0.32),     # 冷たい青みがかったガンメタル。精密狙撃のイメージ
     "Minigun": (0.45, 0.38, 0.22),         # 薬莢の真鍮を連想させるカーキ/ブラス
     "HandCannon": (0.70, 0.70, 0.74),      # 明るいクロームシルバー。マグナムらしい派手さ・全銃中最も明るい色
+    "RocketLauncher": (0.55, 0.22, 0.18),  # 弾薬・危険物を連想させる赤煉瓦色
+    "RicochetRifle": (0.15, 0.55, 0.60),   # 跳弾/エネルギーを連想させる鮮やかなシアン。他に無い色相
+    "Mine": (0.22, 0.26, 0.18),            # 兵器然とした暗いオリーブグリーン
 }
 
 

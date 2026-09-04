@@ -130,6 +130,8 @@ private:
 	bool bounces_ = false;
 	float wallRestitution_ = 0.0f;
 	float floorRestitution_ = 0.0f;
+	int maxBounces_ = 0;   // 0 = 無制限。ProjectileSpawnRequest::maxBounces のコメント参照
+	int bounceCount_ = 0;  // 実際に反射した回数(壁・床とも同じカウンタで数える)
 	float proximityRadius_ = 0.0f;
 	float damageFalloffRange_ = 0.0f;
 	float minDamageMultiplier_ = 1.0f;

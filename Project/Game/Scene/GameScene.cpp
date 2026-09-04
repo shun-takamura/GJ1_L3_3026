@@ -29,6 +29,7 @@
 #include "Weapon/SniperRifle.h"
 #include "Weapon/Minigun.h"
 #include "Weapon/HandCannon.h"
+#include "Weapon/RicochetRifle.h"
 #include "Log.h"
 
 #ifdef USE_IMGUI
@@ -116,7 +117,7 @@ namespace {
 	/// <summary>0〜(count-1) の乱数で武器の種類を選び、フル装弾で1つ生成する。RandomGenerator 経由なので
 	/// リプレイのシード再現性を壊さない(11_Utilities.md、生の rand() は使わない)。</summary>
 	std::unique_ptr<Weapon> CreateRandomWeapon() {
-		const int kind = RandomGenerator::Instance().NextInt(0, 7);
+		const int kind = RandomGenerator::Instance().NextInt(0, 8);
 		switch (kind) {
 			case 0: return std::make_unique<Pistol>();
 			case 1: return std::make_unique<AssaultRifle>();
@@ -126,6 +127,7 @@ namespace {
 			case 5: return std::make_unique<SniperRifle>();
 			case 6: return std::make_unique<Minigun>();
 			case 7: return std::make_unique<HandCannon>();
+			case 8: return std::make_unique<RicochetRifle>();
 			default: return 0;
 		}
 	}
@@ -244,6 +246,11 @@ void GameScene::Initialize() {
 			if (ImGui::CollapsingHeader("HandCannon")) {
 				ImGui::PushID("HandCannon");
 				HandCannon::DrawImGuiTuning();
+				ImGui::PopID();
+			}
+			if (ImGui::CollapsingHeader("RicochetRifle")) {
+				ImGui::PushID("RicochetRifle");
+				RicochetRifle::DrawImGuiTuning();
 				ImGui::PopID();
 			}
 		});
