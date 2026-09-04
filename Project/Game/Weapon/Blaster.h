@@ -24,9 +24,7 @@ public:
   float GetRecoilPower() const override { return kRecoilPower; }
   std::string GetName() const override { return "Blaster"; }
   int GetRemainingAmmo() const override { return ammo_; }
-  std::string GetModelDirectory() const override {
-    return "Resources/Models/Blaster";
-  }
+  std::string GetModelDirectory() const override { return "Resources/Models/Blaster"; }
   std::string GetModelFileName() const override { return "Blaster.mesh"; }
 
   /// <summary>「Weapon

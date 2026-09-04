@@ -131,6 +131,9 @@
     <ClCompile Include="Weapon\Shotgun.cpp" />
     <ClCompile Include="Weapon\Blaster.cpp" />
     <ClCompile Include="Weapon\GrenadeLauncher.cpp" />
+    <ClCompile Include="Weapon\SniperRifle.cpp" />
+    <ClCompile Include="Weapon\Minigun.cpp" />
+    <ClCompile Include="Weapon\HandCannon.cpp" />
     <ClCompile Include="Weapon\ArcingProjectile.cpp" />
     <ClCompile Include="Weapon\WeaponPickup.cpp" />
     <ClCompile Include="AI\AIPerception.cpp" />
@@ -163,6 +166,9 @@
     <ClInclude Include="Weapon\Shotgun.h" />
     <ClInclude Include="Weapon\Blaster.h" />
     <ClInclude Include="Weapon\GrenadeLauncher.h" />
+    <ClInclude Include="Weapon\SniperRifle.h" />
+    <ClInclude Include="Weapon\Minigun.h" />
+    <ClInclude Include="Weapon\HandCannon.h" />
     <ClInclude Include="Weapon\ArcingProjectile.h" />
     <ClInclude Include="Weapon\WeaponPickup.h" />
   </ItemGroup>

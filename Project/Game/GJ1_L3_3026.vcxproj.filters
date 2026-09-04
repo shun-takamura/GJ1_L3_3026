@@ -71,6 +71,15 @@
     <ClCompile Include="Weapon\GrenadeLauncher.cpp">
       <Filter>Weapon</Filter>
     </ClCompile>
+    <ClCompile Include="Weapon\SniperRifle.cpp">
+      <Filter>Weapon</Filter>
+    </ClCompile>
+    <ClCompile Include="Weapon\Minigun.cpp">
+      <Filter>Weapon</Filter>
+    </ClCompile>
+    <ClCompile Include="Weapon\HandCannon.cpp">
+      <Filter>Weapon</Filter>
+    </ClCompile>
     <ClCompile Include="Weapon\ArcingProjectile.cpp">
       <Filter>Weapon</Filter>
     </ClCompile>
@@ -159,6 +168,15 @@
       <Filter>Weapon</Filter>
     </ClInclude>
     <ClInclude Include="Weapon\GrenadeLauncher.h">
+      <Filter>Weapon</Filter>
+    </ClInclude>
+    <ClInclude Include="Weapon\SniperRifle.h">
+      <Filter>Weapon</Filter>
+    </ClInclude>
+    <ClInclude Include="Weapon\Minigun.h">
+      <Filter>Weapon</Filter>
+    </ClInclude>
+    <ClInclude Include="Weapon\HandCannon.h">
       <Filter>Weapon</Filter>
     </ClInclude>
     <ClInclude Include="Weapon\ArcingProjectile.h">

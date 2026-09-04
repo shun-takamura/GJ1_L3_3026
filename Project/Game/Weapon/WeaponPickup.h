@@ -35,8 +35,13 @@ public:
 		const Vector3& position, std::unique_ptr<Weapon> weapon, const IStageQuery* stage);
 	void Finalize();
 
-	/// <summary>毎フレーム呼ぶ。位置自体は動かないが、WVP計算(カメラ行列の反映)のため呼び続ける必要がある。</summary>
-	void Update();
+	/// <summary>
+	/// 毎フレーム呼ぶ。重力とIStageQuery::MoveAabbによる地形接地判定を毎フレーム行い続ける
+	/// (着地後も判定自体は止めない)。これは、着地後に足場のブロックが破壊された場合でも
+	/// 落下を再開できるようにするため(一度きりの判定だと、後から地形が壊れても検知できず
+	/// 宙に浮いたまま残ってしまう不具合になる)。
+	/// </summary>
+	void Update(float dt);
 
 	/// <summary>フォールバックの箱(プリミティブ)だけを描画する。武器モデルは DrawModel() で別途描く。</summary>
 	void Draw();
