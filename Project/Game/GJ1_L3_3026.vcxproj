@@ -125,6 +125,7 @@
     <ClCompile Include="Scene\Transition\TransitionManager.cpp" />
     <ClCompile Include="Character\Character.cpp" />
     <ClCompile Include="Stage\StageGrid.cpp" />
+    <ClCompile Include="Stage\StageCatalog.cpp" />
     <ClCompile Include="Weapon\UnarmedWeapon.cpp" />
     <ClCompile Include="Weapon\Pistol.cpp" />
     <ClCompile Include="Weapon\AssaultRifle.cpp" />
@@ -162,6 +163,7 @@
     <ClInclude Include="AI\EnemyBrain.h" />
     <ClInclude Include="AI\PlayerModel.h" />
     <ClInclude Include="Stage\StageGrid.h" />
+    <ClInclude Include="Stage\StageCatalog.h" />
     <ClInclude Include="Weapon\ProjectileSpawnRequest.h" />
     <ClInclude Include="Weapon\Weapon.h" />
     <ClInclude Include="Weapon\UnarmedWeapon.h" />

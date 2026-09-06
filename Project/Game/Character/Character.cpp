@@ -288,6 +288,10 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 
 	// 手元の武器モデル(持ち替え検出・照準追従)。
 	UpdateWeaponModel();
+
+	// 当たり判定カプセルを今の姿勢(立ち/しゃがみ)に合わせる。
+	// しゃがんだフレームは、この時点で isCrouching_ が確定している。
+	SyncColliderToPose();
 }
 
 void Character::Draw() {
@@ -355,9 +359,14 @@ bool Character::ReceiveHit(const AttackHitbox& hitbox) {
 	// 相手の攻撃判定球(sphere)と、自分の当たり判定カプセルが実際に重なっているかを判定する。
 	// CollisionSystem の総当たりループには乗せず、ここで CollisionGeometry を直接呼んでいる
 	// (06_Collision.md が推奨する「自前でCollisionGeometryを直接使う」パターン)。
+	// 被弾判定は今の姿勢のカプセルで取る。しゃがみ中は背が低く潰れているので、
+	// 立ち姿勢の頭の高さを狙った攻撃はしゃがんでいれば当たらない。
+	Vector3 capsuleCenter;
+	float capsuleCyl, capsuleRadius;
+	GetPoseCapsule(capsuleCenter, capsuleCyl, capsuleRadius);
 	const bool hit = CollisionGeometry::TestSphereCapsule(
 		hitbox.center, hitbox.radius,
-		position_, kIdentityAxes, kCapsuleHeight, kCapsuleRadius);
+		capsuleCenter, kIdentityAxes, capsuleCyl, capsuleRadius);
 	if (!hit) {
 		return false;
 	}
@@ -431,6 +440,54 @@ void Character::ApplyKnockback(float directionX, float power) {
 	knockbackVelocityX_ = dirX * power; // 既存のノックバック速度を上書きする(積み増しはしない)
 }
 
+Vector3 Character::GetColliderHalfExtent() const {
+	const float heightScale = isCrouching_ ? kCrouchHeightScale : 1.0f;
+	return { kCapsuleRadius, kRestHeight * heightScale, kCapsuleRadius };
+}
+
+Vector3 Character::GetColliderCenter() const {
+	const float heightScale = isCrouching_ ? kCrouchHeightScale : 1.0f;
+	const float centerYOffset = -kRestHeight * (1.0f - heightScale); // しゃがみ中は足元固定で中心が下がる
+	return { position_.x, position_.y + centerYOffset, position_.z };
+}
+
+void Character::GetPoseCapsule(Vector3& outCenter, float& outCylinderHeight, float& outRadius) const {
+	const float heightScale = isCrouching_ ? kCrouchHeightScale : 1.0f;
+	outRadius = kCapsuleRadius; // 横幅は姿勢で変えない
+	// 総高 = 2 * (立ち姿勢の半高) * heightScale。円柱部分 = 総高 - 両端の半球ぶん。
+	float cyl = 2.0f * kRestHeight * heightScale - 2.0f * kCapsuleRadius;
+	if (cyl < 0.0f) cyl = 0.0f; // しゃがみ中は球に潰れる
+	outCylinderHeight = cyl;
+	outCenter = GetColliderCenter();
+}
+
+void Character::SyncColliderToPose() {
+	Vector3 center;
+	float cyl, radius;
+	GetPoseCapsule(center, cyl, radius);
+	Collider& c = CollisionSystem::GetInstance()->ColliderOf(this);
+	c.capsuleHeight = cyl;
+	c.capsuleRadius = radius;
+	c.offset = { 0.0f, center.y - position_.y, 0.0f }; // 中心 = position_ + offset
+}
+
+void Character::ApplyBlastKnockback(float dirX, float dirY, float power) {
+	float len = std::sqrt(dirX * dirX + dirY * dirY);
+	if (len < 0.0001f) {
+		// 爆心とほぼ同じ位置なら真上へ吹き飛ばす(方向が定まらないため)。
+		dirX = 0.0f;
+		dirY = 1.0f;
+		len = 1.0f;
+	}
+	const float nx = dirX / len;
+	const float ny = dirY / len;
+	knockbackVelocityX_ = nx * power;   // ApplyKnockback と同じ上書き式
+	verticalVelocity_ = ny * power;
+	if (ny > 0.0f) {
+		grounded_ = false; // 上向きに飛ぶなら空中扱いにして弧を描かせる
+	}
+}
+
 void Character::ApplySlow(float multiplier, float duration) {
 	if (multiplier >= 1.0f || duration <= 0.0f) {
 		return; // 減速にならない/一瞬も持続しない指定は無視する
@@ -457,6 +514,8 @@ void Character::ResetForNewRound(const Vector3& spawnPos) {
 	knockbackVelocityX_ = 0.0f;
 	verticalVelocity_ = 0.0f;
 	grounded_ = true;
+	isCrouching_ = false;
+	SyncColliderToPose(); // 立ち姿勢のカプセルへ戻す
 	hasPendingAttack_ = false;
 	pendingProjectileSpawns_.clear();
 	hasPendingThrow_ = false;

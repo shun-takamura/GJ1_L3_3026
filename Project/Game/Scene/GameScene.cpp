@@ -166,7 +166,11 @@ namespace {
 	}
 }
 
+GameScene* GameScene::s_activeForDebug_ = nullptr;
+
 void GameScene::Initialize() {
+	s_activeForDebug_ = this;
+
 	//===================================
 	// カメラ
 	//===================================
@@ -194,9 +198,13 @@ void GameScene::Initialize() {
 	// 10=黒 / 20=白 の 1.0f 立方体で描画。1/2 のマスからスポーン座標を取り出す。
 	// CSV が読めない場合は最下段だけ床にしたフォールバックで起動する。
 	//===================================
+	stageCatalog_.Scan();
+	currentStageIndex_ = stageCatalog_.PickRandomIndex();
+	Log("GameScene: ステージ選出 -> " + stageCatalog_.NameAt(currentStageIndex_) + "\n");
+
 	stage_ = std::make_unique<StageGrid>();
-	stage_->LoadFromCsv(kStageCsvPath);
-	stage_->Initialize(camera_.get());
+	stage_->LoadFromCsv(stageCatalog_.PathAt(currentStageIndex_));
+	stage_->Initialize(camera_.get(), object3DManager_, dxCore_);
 
 	//===================================
 	// キャラクター
@@ -310,10 +318,40 @@ void GameScene::Initialize() {
 			}
 		});
 	}
+
+	// デバッグ: Resources/Stages/ のステージ一覧を出し、クリックで切り替える。
+	// 切り替えると LoadStage がプレイヤー・敵をそのステージの初期位置へ戻す
+	// (本番のステージ遷移でもそのまま使える形)。
+	static bool stageSelectWindowRegistered = false;
+	if (!stageSelectWindowRegistered) {
+		stageSelectWindowRegistered = true;
+		ImGuiManager::Instance().AddCallbackWindow("Stage Select", []() {
+			GameScene* self = GameScene::s_activeForDebug_;
+			if (!self) {
+				ImGui::TextUnformatted("(GameScene inactive)");
+				return;
+			}
+			ImGui::Text("Current: %s", self->stageCatalog_.NameAt(self->currentStageIndex_).c_str());
+			ImGui::Separator();
+			for (int i = 0; i < self->stageCatalog_.Count(); ++i) {
+				const bool selected = (i == self->currentStageIndex_);
+				if (ImGui::Selectable(self->stageCatalog_.NameAt(i).c_str(), selected)) {
+					self->pendingStageLoad_ = i; // 実際の読み込みは次の Update 先頭で行う
+				}
+			}
+			ImGui::Separator();
+			if (ImGui::Button("Reload / Reset Positions")) {
+				self->pendingStageLoad_ = self->currentStageIndex_;
+			}
+		});
+	}
 #endif
 }
 
 void GameScene::Finalize() {
+	if (s_activeForDebug_ == this) {
+		s_activeForDebug_ = nullptr;
+	}
 	// 依存関係はないが、生成順と逆順に破棄する(可読性のための慣習)。
 	pickups_.clear();
 	flyingObjects_.clear();
@@ -326,7 +364,131 @@ void GameScene::Finalize() {
 	camera_.reset();
 }
 
+void GameScene::LoadStage(int index) {
+	if (stageCatalog_.Empty()) {
+		return;
+	}
+	if (index < 0 || index >= stageCatalog_.Count()) {
+		index = 0;
+	}
+	currentStageIndex_ = index;
+	Log("GameScene: ステージ切り替え -> " + stageCatalog_.NameAt(index) + "\n");
+
+	// ステージを丸ごと作り直す（ギミックの状態・トゲモデルもここで一新される）。
+	stage_->Finalize();
+	stage_->LoadFromCsv(stageCatalog_.PathAt(index));
+	stage_->Initialize(camera_.get(), object3DManager_, dxCore_);
+
+	// 新しいステージのマップチップ初期位置を取り出す（Initialize と同じ既定値フォールバック）。
+	playerSpawn_ = stage_->HasPlayerSpawn()
+		? stage_->GetPlayerSpawnWorld()
+		: Vector3{ -3.0f, 2.0f, 0.0f };
+	const auto& enemySpawns = stage_->GetEnemySpawnsWorld();
+	enemySpawn_ = !enemySpawns.empty() ? enemySpawns.front() : Vector3{ 3.0f, 2.0f, 0.0f };
+
+	// プレイヤー・敵を初期位置へ戻す（HP・速度・状態異常もクリアされる）。
+	if (player_) player_->ResetForNewRound(playerSpawn_);
+	if (enemy_)  enemy_->ResetForNewRound(enemySpawn_);
+	if (enemyBrain_) enemyBrain_->ResetForNewRound();
+
+	// ステージに散らばっていた弾・武器・炎・デバッグ表示は持ち越さない。
+	flyingObjects_.clear();
+	pickups_.clear();
+	fireHazards_.clear();
+	debugFlashes_.clear();
+	weaponSpawnTimer_ = kWeaponSpawnInterval;
+
+	playerInPortal_ = false;
+	enemyInPortal_ = false;
+}
+
+float GameScene::BeltShiftX(const Vector3& center, const Vector3& half, float dt) const {
+	// マージンぶん内側で見て、しっかり乗っていれば通常速度で搬送。
+	int dir = stage_->BeltDirUnderAabb(center, half, kBeltEdgeMargin);
+	float speed = kBeltSpeed;
+	if (dir == 0) {
+		// マージンは越えたが、まだ少しでも触れている → 強めに押し出して落とす
+		// （端で止まってバランスを取らせない）。
+		dir = stage_->BeltDirUnderAabb(center, half, -0.02f);
+		speed = kBeltSpeed * kBeltEdgeEjectMul;
+	}
+	return static_cast<float>(dir) * speed * dt;
+}
+
+void GameScene::UpdateStageGimmicks(float dt) {
+	if (!stage_) {
+		return;
+	}
+
+	auto applyBelt = [&](Character& c) {
+		if (!c.IsGrounded()) {
+			return;
+		}
+		const float sx = BeltShiftX(c.GetColliderCenter(), c.GetColliderHalfExtent(), dt);
+		if (sx != 0.0f) {
+			const Vector3 p = c.GetPosition();
+			c.SetPosition({ p.x + sx, p.y, p.z });
+		}
+	};
+
+	auto applySpike = [&](Character& c) {
+		// プレイヤーの当たり判定 AABB 全体で重なりを見る（しゃがみ中は高さが縮む）。
+		if (stage_->OverlapsSpike(c.GetColliderCenter(), c.GetColliderHalfExtent())) {
+			c.ApplyDamage(100000.0f); // 即死。CheckKnockoutAndReset がリスポーンを処理する
+		}
+	};
+
+	auto applyPortal = [&](Character& c, bool& inPortalFlag) {
+		Vector3 dest{};
+		if (stage_->TryPortal(c.GetColliderCenter(), c.GetColliderHalfExtent(), dest)) {
+			if (!inPortalFlag) {
+				c.SetPosition(dest);
+				inPortalFlag = true; // 出口ポータルから歩いて出るまで再ワープしない
+			}
+		} else {
+			inPortalFlag = false;
+		}
+	};
+
+	applyBelt(*player_);
+	applyBelt(*enemy_);
+	applySpike(*player_);
+	applySpike(*enemy_);
+	applyPortal(*player_, playerInPortal_);
+	applyPortal(*enemy_, enemyInPortal_);
+
+	// 起爆した爆弾ブロックの爆風をキャラへ適用する（地形削り・誘爆は StageGrid 内で完結済み）。
+	auto applyBlast = [](Character& c, const StageGrid::BombExplosion& ex) {
+		const Vector3 p = c.GetPosition();
+		const float dx = p.x - ex.center.x;
+		const float dy = p.y - ex.center.y;
+		const float dist = std::sqrt(dx * dx + dy * dy);
+		if (dist >= ex.radius) {
+			return;
+		}
+		const float falloff = 1.0f - dist / ex.radius; // 爆心=1.0 → 端=0.0
+		c.ApplyDamage(ex.damage * falloff);
+		// 外向き＋やや上向きに吹き飛ばす（放射方向。角度はリアル寄りに +0.35 の上バイアス）。
+		c.ApplyBlastKnockback(dx, dy + 0.35f, kBombKnockbackPower * falloff);
+	};
+	for (const StageGrid::BombExplosion& ex : stage_->ConsumeBombExplosions()) {
+		AddDebugFlash(ex.center, ex.radius, Vector4{ 1.0f, 0.4f, 0.05f, 1.0f }, 0.5f);
+		Log("爆弾ブロックが起爆\n");
+		applyBlast(*player_, ex);
+		applyBlast(*enemy_, ex);
+	}
+}
+
 void GameScene::Update() {
+	// ステージ切り替え要求は Update の先頭でだけ実行する。
+	// ImGui コールバック（EndFrame 中＝コマンドリスト記録後）から直接 stage_ を作り直すと、
+	// まだ実行中のコマンドリストが参照しているリソースを解放してしまい D3D12 #921 になる。
+	if (pendingStageLoad_ >= 0) {
+		const int idx = pendingStageLoad_;
+		pendingStageLoad_ = -1;
+		LoadStage(idx);
+	}
+
 	// デバッグカメラが有効ならそちらの行列をシーンカメラへ注入する(Scene基底の機能)。
 	// 無効なら通常どおり自前のカメラを更新する。
 	UpdateDebugCameraIfActive();
@@ -405,7 +567,7 @@ void GameScene::Update() {
 		}
 	}
 
-	stage_->Update();
+	stage_->Update(dt);
 
 	// デバイスから読んだ生の状態を、解決済みの意図(CharacterInput)にまとめる。
 	// プレイヤーも敵 AI も、ここから先は同じ CharacterInput 経由で Character を動かす。
@@ -508,6 +670,11 @@ void GameScene::Update() {
 	CollisionSystem::GetInstance()->Update();
 
 	//===================================
+	// ステージギミック(ベルトコンベア・トゲ即死・ポータル移動・爆風)
+	//===================================
+	UpdateStageGimmicks(dt);
+
+	//===================================
 	// 攻撃判定(素手)
 	// CollisionSystem の毎フレーム総当たりには乗せず、両者ぶん明示的に ResolveAttack を呼ぶ。
 	// 攻撃は「一瞬だけ判定が必要」なもので、常時判定する仕組みに乗せる必要がないため。
@@ -528,6 +695,15 @@ void GameScene::Update() {
 	//===================================
 	for (auto& pickup : pickups_) {
 		pickup->Update(dt); // 着地するまでは重力で落下する(WeaponPickup.h の設計コメント参照)
+		// 地面に置かれた武器もベルトコンベアで流れる。はみ出せば次フレームの落下判定で落ちる。
+		if (stage_ && pickup->IsGrounded()) {
+			const Vector3 pp = pickup->GetPosition();
+			const Vector3 pickupHalf{ 0.25f, 0.15f, 0.25f }; // WeaponPickup::kHalfExtent と同じ
+			const float sx = BeltShiftX(pp, pickupHalf, dt);
+			if (sx != 0.0f) {
+				pickup->SetPosition({ pp.x + sx, pp.y, pp.z });
+			}
+		}
 	}
 	TryPickUpWeapon(*player_);
 	TryPickUpWeapon(*enemy_);
@@ -617,6 +793,8 @@ void GameScene::ResolveAttack(Character& attacker, Character& defender, const ch
 	if (broke > 0) {
 		Log(std::string(attackerLabel) + " が壊れる床を破壊(" + std::to_string(broke) + ")\n");
 	}
+	// 攻撃が当たった爆弾ブロックは3秒信管が始まる(少しでも当たれば作動)。
+	stage_->ArmBombsInSphere(hitbox.center, hitbox.radius);
 }
 
 bool GameScene::IsOutOfBounds(const Vector3& pos) const {
@@ -723,6 +901,10 @@ void GameScene::SpawnFlyingObject(const ProjectileSpawnRequest& spec, Character*
 void GameScene::UpdateFlyingObjects(float dt) {
 	for (auto& obj : flyingObjects_) {
 		obj->Update(dt);
+		// 飛翔中の弾が爆弾ブロックに触れたら信管が始まる(直撃で消えなくても、掠めれば作動)。
+		if (!obj->IsDead() && stage_) {
+			stage_->ArmBombsInSphere(obj->GetPosition(), obj->GetRadius());
+		}
 		// 今フレーム、どちらかのキャラに直撃して死んだか(地形/寿命切れとは区別する)。
 		// 炎銃の着弾点フレア(下のSpawnFireHazard呼び出し)を「キャラに直撃した場合は
 		// 除外する」判断に使う ── 直撃した相手は既に burnDps/burnDuration で燃えるので、
@@ -817,6 +999,8 @@ void GameScene::ResolveExplosion(const ArcingProjectile& obj) {
 		if (broke > 0) {
 			Log("爆発で壊れる床を破壊(" + std::to_string(broke) + ")\n");
 		}
+		// 武器の爆風に巻き込まれた爆弾ブロックも信管が始まる。
+		stage_->ArmBombsInSphere(center, blastRadius);
 	}
 
 	// 発射者自身を含む全キャラクターへ、距離減衰させたダメージ/ノックバックを適用する。
@@ -962,6 +1146,7 @@ void GameScene::Draw() {
 	if (object3DManager_ && dxCore_) {
 		object3DManager_->DrawSetting();
 		LightManager::GetInstance()->BindLights(dxCore_->GetCommandList());
+		if (stage_) stage_->DrawModels(dxCore_); // ステージギミックのトゲ(Spike.mesh)
 		for (auto& pickup : pickups_) {
 			pickup->DrawModel(dxCore_);
 		}

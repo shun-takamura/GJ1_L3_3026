@@ -9,6 +9,7 @@
 #include "Primitive/PrimitiveInstance.h"
 #include "Character/Character.h"
 #include "Stage/StageGrid.h"
+#include "Stage/StageCatalog.h"
 #include "Weapon/ArcingProjectile.h"
 #include "Weapon/WeaponPickup.h"
 #include "Weapon/FireHazard.h"
@@ -47,9 +48,44 @@ public:
 	Camera* GetCamera() override { return camera_.get(); }
 
 private:
-	// CSV マップチップ1枚。読み込み・描画・地形当たり判定・破壊・リセットを持つ。
-	// Day2 で B の本物の StageGrid に差し替える想定。
-	static constexpr const char* kStageCsvPath = "Resources/Stages/Sample_00.csv";
+	// Resources/Stages/*.csv の一覧。起動時にランダムで1枚選び、デバッグ ImGui から切り替えられる。
+	StageCatalog stageCatalog_;
+	int currentStageIndex_ = 0;
+	// ImGui から要求されたステージ切り替え先（-1 = 要求なし）。次の Update 先頭で実行する。
+	int pendingStageLoad_ = -1;
+
+	/// <summary>
+	/// stageCatalog_ の index 番のステージを読み込み直し、プレイヤー・敵をそのステージの
+	/// マップチップ初期位置へ戻す。飛翔中の弾・pickup・炎・敵 AI の状態もリセットする。
+	/// 本番のステージ遷移でもそのまま呼べる形にしてある。
+	/// </summary>
+	void LoadStage(int index);
+
+	/// <summary>ベルトコンベア・トゲ・ポータル・爆風をキャラへ適用する（player/enemy の Update 後に呼ぶ）。</summary>
+	void UpdateStageGimmicks(float dt);
+
+	/// <summary>
+	/// 中心 center・半サイズ half の AABB が接地している足元セルがベルトコンベアなら、
+	/// このフレームで横へ動かすべき量（符号付き）を返す。乗っていなければ 0。
+	/// マージン内でしっかり乗っていれば通常速度、端をはみ出したら強めに押し出す。
+	/// </summary>
+	float BeltShiftX(const Vector3& center, const Vector3& half, float dt) const;
+
+	// ポータルは「セルから出るまで再ワープしない」。今フレーム、キャラがポータルに乗っているか。
+	bool playerInPortal_ = false;
+	bool enemyInPortal_ = false;
+
+	// ベルトコンベアに乗っているキャラを毎秒どれだけ横へ流すか。
+	static constexpr float kBeltSpeed = 4.0f;
+	// 足がベルト端のマージン（kBeltEdgeMargin）を越えて残りわずかしか乗っていないとき、
+	// この倍率で押し出して確実に落とす（端で止まってバランスを取らせない）。
+	static constexpr float kBeltEdgeMargin = 0.2f;
+	static constexpr float kBeltEdgeEjectMul = 3.0f;
+	// 爆弾の爆風がキャラを吹き飛ばす初速（爆心で最大、半径の端で0）。
+	static constexpr float kBombKnockbackPower = 15.0f;
+
+	// Stage Select ImGui ウィンドウ（プロセス中1回だけ登録）から現在の GameScene を触るための口。
+	static GameScene* s_activeForDebug_;
 
 	std::unique_ptr<Camera> camera_;
 
