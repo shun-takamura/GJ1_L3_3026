@@ -9,12 +9,32 @@
 #include "Log.h"
 #include "Primitive/PrimitiveInstance.h"
 #include "PrimitivePipeline.h"
+#include "Object3DInstance.h"
+#include "RandomGenerator.h"
 #include "Vector4.h"
 
 namespace {
 	// 種別コード（値 / 10）
 	constexpr int kKindUnbreakable = 1; // 10-19
 	constexpr int kKindBreakable = 2;   // 20-29
+	constexpr int kKindGimmick = 3;     // 30-39
+
+	// ギミックの仮ボックス色（本番モデルが入るまでの目印）。
+	const Vector4 kColorBeltLeft { 0.15f, 0.35f, 0.95f, 1.0f }; // 左ベルト = 青
+	const Vector4 kColorBeltRight{ 0.95f, 0.85f, 0.10f, 1.0f }; // 右ベルト = 黄
+	const Vector4 kColorBomb     { 0.95f, 0.12f, 0.10f, 1.0f }; // 爆弾ブロック = 赤
+	const Vector4 kColorPortal   { 0.65f, 0.20f, 0.90f, 1.0f }; // ポータル = 紫
+
+	StageGrid::GimmickType GimmickFromValue(int value) {
+		switch (value % 10) {
+		case 0: return StageGrid::GimmickType::BeltLeft;
+		case 1: return StageGrid::GimmickType::BeltRight;
+		case 2: return StageGrid::GimmickType::Spike;
+		case 3: return StageGrid::GimmickType::Bomb;
+		case 4: return StageGrid::GimmickType::Portal;
+		default: return StageGrid::GimmickType::None;
+		}
+	}
 
 	// 文字列の前後空白を落とす（CSV セルの余分なスペース対策）。
 	std::string Trim(const std::string& s) {
@@ -98,11 +118,21 @@ void StageGrid::ExtractSpawns() {
 	}
 }
 
-void StageGrid::Initialize(Camera* camera) {
+void StageGrid::Initialize(Camera* camera, Object3DManager* object3DManager, DirectXCore* dxCore) {
 	camera_ = camera;
+	object3DManager_ = object3DManager;
+	dxCore_ = dxCore;
+	BuildTilesAndGimmicks();
+}
 
+void StageGrid::BuildTilesAndGimmicks() {
 	tiles_.clear();
+	gimmicks_.clear();
+	pendingBombExplosions_.clear();
 	for (auto& r : tileIndex_) {
+		for (int& i : r) i = -1;
+	}
+	for (auto& r : gimmickIndex_) {
 		for (int& i : r) i = -1;
 	}
 
@@ -110,47 +140,128 @@ void StageGrid::Initialize(Camera* camera) {
 		for (int cx = 0; cx < kCols; ++cx) {
 			const int v = cells_[cy][cx];
 			const int kind = v / 10;
-			if (kind != kKindUnbreakable && kind != kKindBreakable) {
-				continue; // 見た目を持つのは今日のところ床のみ（ギミックは未実装）
+
+			if (kind == kKindUnbreakable || kind == kKindBreakable) {
+				Tile t;
+				t.cx = cx;
+				t.cy = cy;
+				t.value = v;
+				t.hp = (kind == kKindBreakable) ? kBreakableHP : 0.0f;
+
+				t.visual = std::make_unique<PrimitiveInstance>();
+				t.visual->Initialize(PrimitiveInstance::PrimitiveType::Box,
+					"Tile_" + std::to_string(cx) + "_" + std::to_string(cy));
+				t.visual->SetCamera(camera_);
+				t.visual->SetScale({ kCellSize, kCellSize, kCellSize });
+				t.visual->SetTranslate(CellToWorldCenter(cx, cy));
+
+				// 既定は加算ブレンド＋深度書き込み無しなので、不透明タイル用に明示する
+				// （加算だと黒 = {0,0,0} が背景に埋もれて見えない）。
+				PrimitiveMesh& mesh = t.visual->GetMesh();
+				mesh.SetBlendMode(PrimitivePipeline::kBlendModeNormal);
+				mesh.SetDepthWrite(true);
+				mesh.SetCullBackface(true);
+				mesh.SetColor(kind == kKindUnbreakable
+					? Vector4{ 0.0f, 0.0f, 0.0f, 1.0f }   // 壊れない床 = 黒
+					: Vector4{ 1.0f, 1.0f, 1.0f, 1.0f }); // 壊れる床   = 白
+
+				tileIndex_[cy][cx] = static_cast<int>(tiles_.size());
+				tiles_.push_back(std::move(t));
+				continue;
 			}
 
-			Tile t;
-			t.cx = cx;
-			t.cy = cy;
-			t.value = v;
-			t.hp = (kind == kKindBreakable) ? kBreakableHP : 0.0f;
+			if (kind != kKindGimmick) {
+				continue;
+			}
 
-			t.visual = std::make_unique<PrimitiveInstance>();
-			t.visual->Initialize(PrimitiveInstance::PrimitiveType::Box,
-				"Tile_" + std::to_string(cx) + "_" + std::to_string(cy));
-			t.visual->SetCamera(camera_);
-			t.visual->SetScale({ kCellSize, kCellSize, kCellSize });
-			t.visual->SetTranslate(CellToWorldCenter(cx, cy));
+			const GimmickType type = GimmickFromValue(v);
+			if (type == GimmickType::None) {
+				continue;
+			}
 
-			// 既定は加算ブレンド＋深度書き込み無しなので、不透明タイル用に明示する
-			// （加算だと黒 = {0,0,0} が背景に埋もれて見えない）。
-			PrimitiveMesh& mesh = t.visual->GetMesh();
-			mesh.SetBlendMode(PrimitivePipeline::kBlendModeNormal);
-			mesh.SetDepthWrite(true);
-			mesh.SetCullBackface(true);
-			mesh.SetColor(kind == kKindUnbreakable
-				? Vector4{ 0.0f, 0.0f, 0.0f, 1.0f }   // 壊れない床 = 黒
-				: Vector4{ 1.0f, 1.0f, 1.0f, 1.0f }); // 壊れる床   = 白
+			Gimmick g;
+			g.cx = cx;
+			g.cy = cy;
+			g.type = type;
+			const Vector3 pos = CellToWorldCenter(cx, cy);
+			const std::string tag = std::to_string(cx) + "_" + std::to_string(cy);
 
-			tileIndex_[cy][cx] = static_cast<int>(tiles_.size());
-			tiles_.push_back(std::move(t));
+			if (type == GimmickType::Spike) {
+				// トゲだけは専用モデル（Spike.mesh）。描画コンテキスト未設定なら見た目なし（判定は生きる）。
+				if (object3DManager_ && dxCore_) {
+					g.model = std::make_unique<Object3DInstance>();
+					g.model->Initialize(object3DManager_, dxCore_,
+						"Resources/Models/StageGimmick", "Spike.mesh", "Spike_" + tag);
+					g.model->SetCamera(camera_);
+					g.model->SetScale({ kCellSize, kCellSize, kCellSize });
+					g.model->SetTranslate(pos);
+				}
+			} else {
+				// 左ベルト＝青 / 右ベルト＝黄 / 爆弾＝赤 / ポータル＝紫 の仮ボックス。
+				Vector4 color = kColorPortal;
+				if (type == GimmickType::BeltLeft)  color = kColorBeltLeft;
+				if (type == GimmickType::BeltRight) color = kColorBeltRight;
+				if (type == GimmickType::Bomb)      color = kColorBomb;
+
+				g.visual = std::make_unique<PrimitiveInstance>();
+				g.visual->Initialize(PrimitiveInstance::PrimitiveType::Box, "Gimmick_" + tag);
+				g.visual->SetCamera(camera_);
+				g.visual->SetScale({ kCellSize, kCellSize, kCellSize });
+				g.visual->SetTranslate(pos);
+				PrimitiveMesh& mesh = g.visual->GetMesh();
+				mesh.SetBlendMode(PrimitivePipeline::kBlendModeNormal);
+				mesh.SetDepthWrite(true);
+				mesh.SetCullBackface(true);
+				mesh.SetColor(color);
+			}
+
+			gimmickIndex_[cy][cx] = static_cast<int>(gimmicks_.size());
+			gimmicks_.push_back(std::move(g));
 		}
 	}
 }
 
 void StageGrid::Finalize() {
 	tiles_.clear();
+	gimmicks_.clear();
+	pendingBombExplosions_.clear();
 }
 
-void StageGrid::Update() {
+void StageGrid::Update(float dt) {
 	for (auto& t : tiles_) {
 		if (!t.destroyed && t.visual) {
 			t.visual->Update();
+		}
+	}
+
+	// 爆弾の信管を進める。0 以下になったら起爆（DetonateBomb が誘爆と地形削りまで行う）。
+	// range-for 中に誘爆で fuse を書き換えるだけなので vector の再確保は起きない。
+	for (size_t i = 0; i < gimmicks_.size(); ++i) {
+		Gimmick& g = gimmicks_[i];
+		if (g.type != GimmickType::Bomb || g.destroyed) {
+			continue;
+		}
+		if (g.fuse >= 0.0f) {
+			g.fuse -= dt;
+			if (g.fuse <= 0.0f) {
+				DetonateBomb(g);
+				continue;
+			}
+			// 起爆が近いほど速く赤⇔白で点滅させる。
+			if (g.visual) {
+				const float period = (std::max)(0.08f, g.fuse * 0.35f);
+				const bool on = std::fmod(g.fuse, period) < period * 0.5f;
+				g.visual->GetMesh().SetColor(on ? Vector4{ 1.0f, 1.0f, 1.0f, 1.0f } : kColorBomb);
+			}
+		}
+	}
+
+	for (auto& g : gimmicks_) {
+		if (!g.destroyed && g.visual) {
+			g.visual->Update();
+		}
+		if (!g.destroyed && g.model) {
+			g.model->Update();
 		}
 	}
 }
@@ -161,6 +272,139 @@ void StageGrid::Draw() {
 			t.visual->Draw();
 		}
 	}
+	for (auto& g : gimmicks_) {
+		if (!g.destroyed && g.visual) {
+			g.visual->Draw();
+		}
+	}
+}
+
+void StageGrid::DrawModels(DirectXCore* dxCore) {
+	for (auto& g : gimmicks_) {
+		if (!g.destroyed && g.model) {
+			g.model->Draw(dxCore);
+		}
+	}
+}
+
+StageGrid::GimmickType StageGrid::GimmickTypeAtCell(int cx, int cy) const {
+	if (!InBounds(cx, cy)) {
+		return GimmickType::None;
+	}
+	const int idx = gimmickIndex_[cy][cx];
+	if (idx < 0 || idx >= static_cast<int>(gimmicks_.size()) || gimmicks_[idx].destroyed) {
+		return GimmickType::None;
+	}
+	return gimmicks_[idx].type;
+}
+
+int StageGrid::BeltDirUnderAabb(const Vector3& center, const Vector3& half, float edgeMargin) const {
+	const float footY = center.y - half.y - 0.05f; // 底面のすぐ下
+	float inset = edgeMargin;
+	if (inset > half.x - 0.02f) inset = half.x - 0.02f; // 帯が反転しないようにクランプ
+	int cxLo, cy, cxHi, cyHi;
+	WorldToCell({ center.x - half.x + inset, footY, 0.0f }, cxLo, cy);
+	WorldToCell({ center.x + half.x - inset, footY, 0.0f }, cxHi, cyHi);
+	for (int cx = cxLo; cx <= cxHi; ++cx) {
+		switch (GimmickTypeAtCell(cx, cy)) {
+		case GimmickType::BeltLeft:  return -1;
+		case GimmickType::BeltRight: return 1;
+		default: break;
+		}
+	}
+	return 0;
+}
+
+bool StageGrid::OverlapsSpike(const Vector3& center, const Vector3& half) const {
+	int cxLo, cyLo, cxHi, cyHi;
+	WorldToCell({ center.x - half.x, center.y + half.y, 0.0f }, cxLo, cyLo);
+	WorldToCell({ center.x + half.x, center.y - half.y, 0.0f }, cxHi, cyHi);
+	for (int cy = cyLo; cy <= cyHi; ++cy) {
+		for (int cx = cxLo; cx <= cxHi; ++cx) {
+			if (GimmickTypeAtCell(cx, cy) == GimmickType::Spike) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+bool StageGrid::TryPortal(const Vector3& center, const Vector3& half, Vector3& outDest) {
+	int cxLo, cyLo, cxHi, cyHi;
+	WorldToCell({ center.x - half.x, center.y + half.y, 0.0f }, cxLo, cyLo);
+	WorldToCell({ center.x + half.x, center.y - half.y, 0.0f }, cxHi, cyHi);
+	auto overlapsBox = [&](int gx, int gy) {
+		return gx >= cxLo && gx <= cxHi && gy >= cyLo && gy <= cyHi;
+	};
+
+	bool onPortal = false;
+	std::vector<const Gimmick*> exits;
+	for (const auto& g : gimmicks_) {
+		if (g.type != GimmickType::Portal || g.destroyed) {
+			continue;
+		}
+		if (overlapsBox(g.cx, g.cy)) {
+			onPortal = true;      // 今キャラが乗っているポータル
+		} else {
+			exits.push_back(&g);  // 出口候補
+		}
+	}
+	if (!onPortal || exits.empty()) {
+		return false;
+	}
+	const int pick = RandomGenerator::Instance().NextInt(0, static_cast<int>(exits.size()) - 1);
+	outDest = CellToWorldCenter(exits[pick]->cx, exits[pick]->cy);
+	return true;
+}
+
+void StageGrid::ArmBombsInSphere(const Vector3& center, float radius) {
+	const float half = kCellSize * 0.5f;
+	const float r2 = radius * radius;
+	for (auto& g : gimmicks_) {
+		if (g.type != GimmickType::Bomb || g.destroyed || g.fuse >= 0.0f) {
+			continue; // 未作動の爆弾だけを対象にする（作動中は上書きしない）
+		}
+		const Vector3 c = CellToWorldCenter(g.cx, g.cy);
+		const float dx = (std::max)(std::fabs(center.x - c.x) - half, 0.0f);
+		const float dy = (std::max)(std::fabs(center.y - c.y) - half, 0.0f);
+		if (dx * dx + dy * dy <= r2) {
+			g.fuse = kBombFuseSeconds;
+		}
+	}
+}
+
+void StageGrid::DetonateBomb(Gimmick& bomb) {
+	bomb.destroyed = true;
+	bomb.fuse = -1.0f;
+	gimmickIndex_[bomb.cy][bomb.cx] = -1;
+
+	const Vector3 center = CellToWorldCenter(bomb.cx, bomb.cy);
+	const float radius = kBombRadiusCells * kCellSize;
+
+	// 壊れる床を爆風半径ぶん削る。
+	DamageSphere(center, radius, kBombDamage);
+
+	// キャラへの適用は GameScene 側（吹っ飛ばしはリアルな放射方向で）。
+	pendingBombExplosions_.push_back({ center, radius, kBombDamage });
+
+	// 誘爆: 範囲内の未作動の爆弾に短い信管を仕込む。
+	for (auto& g : gimmicks_) {
+		if (g.type != GimmickType::Bomb || g.destroyed || g.fuse >= 0.0f) {
+			continue;
+		}
+		const Vector3 c = CellToWorldCenter(g.cx, g.cy);
+		const float dx = c.x - center.x;
+		const float dy = c.y - center.y;
+		if (dx * dx + dy * dy <= radius * radius) {
+			g.fuse = kBombChainFuseSeconds;
+		}
+	}
+}
+
+std::vector<StageGrid::BombExplosion> StageGrid::ConsumeBombExplosions() {
+	std::vector<BombExplosion> out = std::move(pendingBombExplosions_);
+	pendingBombExplosions_.clear();
+	return out;
 }
 
 int StageGrid::DamageSphere(const Vector3& center, float radius, float damage) {
@@ -221,7 +465,13 @@ int StageGrid::GetChip(int cx, int cy) const {
 
 bool StageGrid::IsSolidCell(int cx, int cy) const {
 	const int kind = GetChip(cx, cy) / 10;
-	return kind == kKindUnbreakable || kind == kKindBreakable;
+	if (kind == kKindUnbreakable || kind == kKindBreakable) {
+		return true;
+	}
+	// ベルトコンベア（30/31）は「上に乗れる」ように床として扱う。
+	// トゲ・爆弾・ポータルはすり抜ける（非ソリッド）。
+	const GimmickType g = GimmickTypeAtCell(cx, cy);
+	return g == GimmickType::BeltLeft || g == GimmickType::BeltRight;
 }
 
 bool StageGrid::IsBreakableCell(int cx, int cy) const {

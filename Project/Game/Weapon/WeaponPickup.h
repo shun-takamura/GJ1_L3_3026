@@ -50,6 +50,10 @@ public:
 	void DrawModel(DirectXCore* dxCore);
 
 	Vector3 GetPosition() const { return position_; }
+	void SetPosition(const Vector3& pos) { position_ = pos; }
+
+	/// <summary>地形に着地しているか（ベルトコンベアで流すかどうかの判断に使う）。</summary>
+	bool IsGrounded() const { return grounded_; }
 
 	/// <summary>誰かに取られて weapon_ が空になっているか。true なら GameScene がリストから除去してよい。</summary>
 	bool IsTaken() const { return !weapon_; }

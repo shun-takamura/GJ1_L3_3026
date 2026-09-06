@@ -53,6 +53,9 @@
     <ClCompile Include="Stage\StageGrid.cpp">
       <Filter>Stage</Filter>
     </ClCompile>
+    <ClCompile Include="Stage\StageCatalog.cpp">
+      <Filter>Stage</Filter>
+    </ClCompile>
     <ClCompile Include="Weapon\UnarmedWeapon.cpp">
       <Filter>Weapon</Filter>
     </ClCompile>
@@ -156,6 +159,9 @@
       <Filter>AI</Filter>
     </ClInclude>
     <ClInclude Include="Stage\StageGrid.h">
+      <Filter>Stage</Filter>
+    </ClInclude>
+    <ClInclude Include="Stage\StageCatalog.h">
       <Filter>Stage</Filter>
     </ClInclude>
     <ClInclude Include="Weapon\ProjectileSpawnRequest.h">

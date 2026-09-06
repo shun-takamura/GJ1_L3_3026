@@ -128,6 +128,13 @@ public:
 	/// <summary>directionX の符号方向へ、大きさ power の初速でノックバックさせる(横視点なので水平X方向のみ)。</summary>
 	void ApplyKnockback(float directionX, float power);
 
+	/// <summary>
+	/// (dirX, dirY) の向き(正規化されていなくてよい)へ大きさ power で吹き飛ばす。
+	/// 水平成分は knockbackVelocityX_ を上書き、垂直成分は verticalVelocity_ を上書きし、
+	/// 上向きなら接地フラグも外す。爆風の「放射状に吹っ飛ぶ」表現用(ApplyKnockback の斜め版)。
+	/// </summary>
+	void ApplyBlastKnockback(float dirX, float dirY, float power);
+
 	/// <summary>移動速度に multiplier(1.0未満で減速)を duration 秒だけ掛ける(氷銃用)。
 	/// ApplyKnockback と同じ上書き式 ── 再命中すれば効果時間・強さがその時点の値に更新される
 	/// (積み増しはしない)。multiplier が 1.0 以上、または duration が 0 以下なら何もしない。</summary>
@@ -139,6 +146,15 @@ public:
 
 	Vector3 GetPosition() const { return position_; }
 	void SetPosition(const Vector3& pos) { position_ = pos; }
+
+	/// <summary>
+	/// 現在の当たり判定 AABB の中心。しゃがみ中は頭が下がるぶん中心も下へずれる
+	/// （Update() 内の MoveAabb に渡している中心・半サイズと同じ計算）。
+	/// ステージギミック（トゲ・ポータル）の重なり判定を「プレイヤーのサイズ」で取るために公開している。
+	/// </summary>
+	Vector3 GetColliderCenter() const;
+	/// <summary>現在の当たり判定 AABB の半サイズ。しゃがみ中は高さ(y)が縮む。</summary>
+	Vector3 GetColliderHalfExtent() const;
 
 	/// <summary>現在の照準方向(正規化済み)。デバッグ表示(照準レイの描画)用に公開している。</summary>
 	float GetAimDirX() const { return aimDirX_; }
@@ -259,6 +275,17 @@ private:
 
 	/// <summary>CollisionSystem に自分用の Capsule コライダーを設定する(Initialize から呼ぶ)。</summary>
 	void SetupCollider();
+
+	/// <summary>
+	/// 現在の姿勢(立ち/しゃがみ)に応じた当たり判定カプセルの中心・円柱高さ・半径を返す。
+	/// しゃがみ中は総高が半分(kCrouchHeightScale)になり、足元は固定で中心が下がる。
+	/// 攻撃の被弾判定(ReceiveHit)と、キャラ同士の押し合い(CollisionSystem)の両方で使う。
+	/// </summary>
+	void GetPoseCapsule(Vector3& outCenter, float& outCylinderHeight, float& outRadius) const;
+
+	/// <summary>GetPoseCapsule の値を CollisionSystem のコライダー(高さ・半径・オフセット)へ反映する。
+	/// Update() の末尾で毎フレーム呼ぶ(しゃがみ切り替えに追従させる)。</summary>
+	void SyncColliderToPose();
 
 	/// <summary>
 	/// 自分のコライダーが他のキャラのコライダーと重なったときに呼ばれるコールバック
