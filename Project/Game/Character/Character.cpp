@@ -1,6 +1,8 @@
 #include "Character.h"
 
 #include <cmath>
+#include <filesystem>
+#include <string>
 #include <utility>
 
 #include "Camera.h"
@@ -11,6 +13,9 @@
 #include "Weapon/Weapon.h"
 #include "Weapon/UnarmedWeapon.h"
 #include "Object3DInstance.h"
+#include "ModelManager.h"
+#include "AnimatedModelInstance.h"
+#include "AnimatedObject3DInstance.h"
 
 #ifdef USE_IMGUI
 #include "imgui.h"
@@ -25,6 +30,33 @@ namespace {
 		{ 0.0f, 1.0f, 0.0f },
 		{ 0.0f, 0.0f, 1.0f },
 	};
+
+	// アニメクリップ。cook 後は Resources/Models/Player/player_<名前>.anim になる。
+	// 並びは Blender の generate_anims.py の CLIP_NAMES と一致させること。
+	enum {
+		CLIP_IDLE, CLIP_RUN, CLIP_JUMP, CLIP_FALL, CLIP_LAND,
+		CLIP_SHOOT, CLIP_PUNCH, CLIP_THROW, CLIP_HIT, CLIP_DEATH,
+		CLIP_WALLSLIDE, CLIP_WALLJUMP, CLIP_CROUCHIDLE, CLIP_CROUCHWALK,
+		CLIP_COUNT
+	};
+	const char* const kClipNames[CLIP_COUNT] = {
+		"Idle", "Run", "Jump", "Fall", "Land",
+		"Shoot", "Punch", "Throw", "Hit", "Death",
+		"WallSlide", "WallJump", "CrouchIdle", "CrouchWalk",
+	};
+
+	// 全キャラ共有の向き補正(度)。Blender→エンジンの軸ずれを実機で詰めるための調整値。
+	// モデルは既定で +X(画面右)向き。aimDirX_ が負のとき 180° 足して左を向かせる。
+	float s_modelYawOffsetDeg = 0.0f;
+
+	// 予備動作の種類(Character::windupKind_)。
+	enum { WU_NONE, WU_JUMP, WU_THROW, WU_MELEE };
+
+	constexpr const char* kAnimMeshPath = "Resources/Models/Player/player.mesh";
+
+	std::string ClipPath(int clip) {
+		return std::string("Resources/Models/Player/player_") + kClipNames[clip] + ".anim";
+	}
 }
 
 Character::Character() = default;
@@ -52,6 +84,8 @@ void Character::Initialize(Camera* camera, const std::string& name, const Vector
 }
 
 void Character::Finalize() {
+	animChara_.reset();   // animModel_ を生ポインタで参照しているので先に破棄
+	animModel_.reset();
 	visual_.reset();
 	weaponModel_.reset();
 }
@@ -59,6 +93,39 @@ void Character::Finalize() {
 void Character::SetWeaponRenderContext(Object3DManager* object3DManager, DirectXCore* dxCore) {
 	object3DManager_ = object3DManager;
 	weaponModelDxCore_ = dxCore;
+}
+
+void Character::SetupAnimatedModel(Object3DManager* object3DManager,
+	SkinningComputeManager* skinningComputeManager, DirectXCore* dxCore, SRVManager* srvManager,
+	const Vector4& teamColor) {
+	object3DManagerForAnim_ = object3DManager;
+	skinningComputeManager_ = skinningComputeManager;
+	animDxCore_ = dxCore;
+	srvManager_ = srvManager;
+	teamColor_ = teamColor;
+
+	// アセット未生成(cook 前)でもゲームは Box のまま動くようにする。
+	if (!object3DManager || !skinningComputeManager || !dxCore || !srvManager) return;
+	if (!std::filesystem::exists(kAnimMeshPath)) return;
+
+	animModel_ = std::make_unique<AnimatedModelInstance>();
+	animModel_->Initialize(ModelManager::GetInstance()->GetModelCore(),
+		"Resources/Models/Player", "player.mesh");
+
+	animChara_ = std::make_unique<AnimatedObject3DInstance>();
+	animChara_->Initialize(object3DManager, skinningComputeManager, dxCore, srvManager,
+		animModel_.get(), name_ + "_Model");
+	animChara_->SetSourcePath("Resources/Models/Player", "player.mesh");
+	animChara_->SetCamera(camera_);
+	animChara_->SetScale({ kModelScale, kModelScale, kModelScale });
+	animChara_->SetMaterialColor(teamColor_);
+
+	currentClipIndex_ = CLIP_IDLE;
+	if (std::filesystem::exists(ClipPath(CLIP_IDLE))) {
+		animChara_->PlayAnimation(ClipPath(CLIP_IDLE), 0.0f);
+		animChara_->SetLoop(true);
+	}
+	// これ以降、Character::Draw() は Box を描かず animChara_ を描く。
 }
 
 void Character::SetupCollider() {
@@ -134,6 +201,22 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 	// このフレームの移動前の位置。地形当たり判定は「開始位置 → 積分後の位置」で一度だけ解決する。
 	const Vector3 startPos = position_;
 
+	// ---- 予備動作(windup)の進行 ----
+	// アニメの「実際に動く」フレームにゲーム内効果を合わせるための遅延。
+	// windupTimer_ が 0 を跨いだフレームで、下の各セクションが効果を発動する。
+	if (IsDead()) {
+		windupKind_ = WU_NONE;  // 予備動作中に死んだら発動しない
+	}
+	if (windupKind_ != WU_NONE) {
+		windupTimer_ -= dt;
+	}
+	if (windupKind_ == WU_JUMP) {
+		// 踏み切りモーション中は足を止め、追加入力を無視する(しゃがみジャンプの溜め)。
+		moveX = 0.0f;
+		jumpTriggered = false;
+		crouchHeld = false;
+	}
+
 	// ---- しゃがみ判定 ----
 	// 接地中にしゃがみ入力があればしゃがむ。入力を離しても、頭上に立ち上がる空間が
 	// 無ければしゃがみを継続する(低い隙間の下で勝手に立って天井へめり込むのを防ぐ)。
@@ -192,10 +275,16 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 	wallJumpVelocityX_ *= wallJumpDamp;
 
 	// ---- 重力・ジャンプ ----
-	// しゃがみ中はジャンプできない(しゃがみを解除してから)。
-	if (jumpTriggered && grounded_ && !isCrouching_) {
+	// 予備動作(しゃがみ込み)が終わったフレームで実際に踏み切る。
+	if (windupKind_ == WU_JUMP && windupTimer_ <= 0.0f) {
+		windupKind_ = WU_NONE;
 		verticalVelocity_ = kJumpSpeed;
 		grounded_ = false;
+	}
+	// しゃがみ中はジャンプできない(しゃがみを解除してから)。
+	if (jumpTriggered && grounded_ && !isCrouching_ && windupKind_ == WU_NONE) {
+		windupKind_ = WU_JUMP;
+		windupTimer_ = kJumpWindup;   // 踏み切りは kJumpWindup 秒後(アニメのコミットに合わせる)
 	} else if (jumpTriggered && !grounded_ && !isCrouching_ && wallContactDir_ != 0) {
 		// ---- 壁ジャンプ ----
 		// 空中で壁に密着していればジャンプ入力で壁と反対方向へ蹴って跳ぶ。
@@ -205,6 +294,7 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 		wallJumpVelocityX_ = -static_cast<float>(wallContactDir_) * kWallJumpPushXSpeed;
 		wallJumpInputLockTimer_ = kWallJumpInputLockTime;
 		wallJumpLockDir_ = wallContactDir_; // 蹴った壁の方向への入力を少しの間打ち消す
+		wallJumpAnimTimer_ = 0.30f;         // 壁蹴りアニメを再生
 	}
 
 	// ---- 壁ずり落ち ----
@@ -271,10 +361,30 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 	// 実際の攻撃ロジック(クールダウン・残弾・弾道)は装備中の Weapon に委譲する。
 	// Character は「今 hitbox/弾が生成されたかどうか」を受け取ってペンディングバッファに
 	// 積むだけで、武器ごとの違いは一切知らない(Weapon.h の設計コメント参照)。
-	AttackHitbox meleeHitbox;
-	if (equippedWeapon_->TryMeleeAttack(dt, attackTriggered, position_, aimDirX_, aimDirY_, meleeHitbox)) {
+	// 近接攻撃も予備動作(引き)を挟む。トリガー時にヒットボックスの雛形を作って貯めておき、
+	// kMeleeWindup 秒後(アニメの打撃フレーム)に、その時点の位置で当たり判定を成立させる。
+	if (windupKind_ == WU_MELEE && windupTimer_ <= 0.0f) {
+		windupKind_ = WU_NONE;
+		windupHitbox_.center = {
+			position_.x + windupHitOffset_.x,
+			position_.y + windupHitOffset_.y,
+			position_.z + windupHitOffset_.z };
+		windupHitbox_.knockbackDirX = (windupAimX_ >= 0.0f) ? 1.0f : -1.0f;
 		hasPendingAttack_ = true;
-		pendingAttack_ = meleeHitbox;
+		pendingAttack_ = windupHitbox_;
+	}
+	AttackHitbox meleeHitbox;
+	if (windupKind_ == WU_NONE &&
+		equippedWeapon_->TryMeleeAttack(dt, attackTriggered, position_, aimDirX_, aimDirY_, meleeHitbox)) {
+		windupKind_ = WU_MELEE;
+		windupTimer_ = kMeleeWindup;
+		windupHitbox_ = meleeHitbox;
+		windupAimX_ = aimDirX_;
+		windupAimY_ = aimDirY_;
+		windupHitOffset_ = {
+			meleeHitbox.center.x - position_.x,
+			meleeHitbox.center.y - position_.y,
+			meleeHitbox.center.z - position_.z };
 	}
 	std::vector<ProjectileSpawnRequest> spawns;
 	if (equippedWeapon_->TryRangedAttack(dt, attackTriggered, attackHeld, position_, aimDirX_, aimDirY_, spawns)) {
@@ -291,13 +401,27 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 	// (「弾切れの銃を投げても同じ威力」という仕様。Weapon.h 側の反動とは無関係の別パラメータ)。
 	// ただし武器の実体(残弾を含む)は捨てずに pendingThrowWeapon_ で持ち運ぶ ── 着弾しても
 	// 残弾が残っていればその場に落ちて拾い直せる(GameScene::UpdateFlyingObjects 側の判断)。
-	if (throwTriggered && equippedWeapon_->CanBeThrown()) {
+	// 投げも予備動作(振りかぶり)を挟む。トリガーで武器を手放して振りかぶり開始、
+	// kThrowWindup 秒後(アニメのリリースフレーム)にその時点の位置・トリガー時の照準で放つ。
+	if (throwTriggered && equippedWeapon_->CanBeThrown() && windupKind_ == WU_NONE) {
+		windupKind_ = WU_THROW;
+		windupTimer_ = kThrowWindup;
+		windupAimX_ = aimDirX_;
+		windupAimY_ = aimDirY_;
+		// 武器の所有権を先に pendingThrowWeapon_ へ移す(振りかぶり中は手に握ったまま描画する)。
+		pendingThrowWeapon_ = std::move(equippedWeapon_);
+		equippedWeapon_ = std::make_unique<UnarmedWeapon>();
+	}
+	if (windupKind_ == WU_THROW && windupTimer_ <= 0.0f) {
+		windupKind_ = WU_NONE;
+		const float ax = windupAimX_;
+		const float ay = windupAimY_;
 		// 投げる位置は自分の中心から照準方向へ少し離す(自分自身に当たらないようにするため)。
-		pendingThrow_.origin = { position_.x + aimDirX_ * kThrowForwardOffset, position_.y + aimDirY_ * kThrowForwardOffset, position_.z };
+		pendingThrow_.origin = { position_.x + ax * kThrowForwardOffset, position_.y + ay * kThrowForwardOffset, position_.z };
 		// 初速は照準方向 × 投擲速度。この後は ArcingProjectile 側が重力を積分して放物線を描く
 		// (銃弾と全く同じ物理。Weapon/ArcingProjectile.h 参照)。
-		pendingThrow_.velocityX = aimDirX_ * kThrowSpeed;
-		pendingThrow_.velocityY = aimDirY_ * kThrowSpeed;
+		pendingThrow_.velocityX = ax * kThrowSpeed;
+		pendingThrow_.velocityY = ay * kThrowSpeed;
 		pendingThrow_.gravityScale = kThrowGravityScale;
 		pendingThrow_.radius = kThrowRadius;
 		pendingThrow_.lifeTime = kThrowLifeTime;         // 何にも当たらなければこの秒数で消える
@@ -311,12 +435,9 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 		pendingThrow_.bounces = true;
 		pendingThrow_.wallRestitution = kThrowWallRestitution;
 		pendingThrow_.floorRestitution = 0.0f;
-		hasPendingThrow_ = true; // GameScene が ConsumePendingThrow() で回収し、実体(ArcingProjectile)を生成する
-		// 今の武器の所有権を pendingThrowWeapon_ へ移し(=equippedWeapon_ は空になる)、
-		// 代わりに新しい素手を装備する。武器本体を捨てずに持ち運ぶのは、GameScene が
-		// 着弾後に残弾を見て「地面に残すかどうか」を判断できるようにするため。
-		pendingThrowWeapon_ = std::move(equippedWeapon_);
-		equippedWeapon_ = std::make_unique<UnarmedWeapon>();
+		// pendingThrowWeapon_ は既に振りかぶり開始時に移譲済み。GameScene が ConsumePendingThrow()
+		// で回収し、実体(ArcingProjectile)を生成する。着弾後に残弾が残っていれば地面に落ちる。
+		hasPendingThrow_ = true;
 	}
 
 	// ---- 状態異常(氷銃・炎銃。ApplySlow/ApplyBurn 参照) ----
@@ -340,26 +461,35 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 	}
 
 	// ---- 見た目への反映 ----
-	if (visual_) {
-		// しゃがみ中は Box を上から縮めて見た目だけ低くする。足元(y=0)は動かさず、
-		// 頭の高さだけが下がるように中心Y(visualPos.y)を計算する。
-		// 立っているとき(heightScale=1)は補正項が0になり、position_.y をそのまま使う
-		// (＝ジャンプ中の弧はこのロジックの影響を受けない)。
+	// ダメージ直後は赤・氷結中は水色、それ以外は素の色(アニメモデル=チーム色 / Box=白)。
+	// 「当たったのに反応が無い/なぜ動きが重いのか分からない」を防ぐための最小限の演出。
+	// 燃焼(burn)は毎フレーム ApplyDamage が呼ばれ続けるので、赤が点滅し続ける形で表現される。
+	Vector4 tintColor = animChara_ ? teamColor_ : Vector4{ 1.0f, 1.0f, 1.0f, 1.0f };
+	if (damageFlashTimer_ > 0.0f) {
+		tintColor = { 1.0f, 0.2f, 0.2f, 1.0f };
+	} else if (slowTimer_ > 0.0f) {
+		tintColor = { 0.3f, 0.75f, 1.0f, 1.0f };
+	}
+
+	if (animChara_) {
+		// モデルのローカル原点(足元 Y=0)が position_ の足元へ来るように置く。
+		animChara_->SetTranslate({ position_.x, position_.y - kRestHeight, position_.z });
+		// 照準の左右で向きを反転する(モデル既定は +X=画面右 向き)。
+		// s_modelYawOffsetDeg は Blender→エンジンの向きずれを実機で詰めるための共有調整値。
+		const float yaw = ((aimDirX_ >= 0.0f) ? 0.0f : kPi) + DegToRad(s_modelYawOffsetDeg);
+		animChara_->SetRotate({ 0.0f, yaw, 0.0f });
+		animChara_->SetScale({ kModelScale, kModelScale, kModelScale });
+		animChara_->SetMaterialColor(tintColor);
+		// しゃがみ専用クリップは未制作(暫定で Idle)。当たり判定カプセルだけは縮む。
+		UpdateAnimationState(dt, moveX);
+		animChara_->Update(dt);
+	} else if (visual_) {
+		// フォールバックの Box。しゃがみ中は上から縮めて見た目だけ低くする(足元 y=0 は固定)。
 		const float heightScale = isCrouching_ ? kCrouchHeightScale : 1.0f;
 		visual_->SetScale({ 0.9f, kRestHeight * 2.0f * heightScale, 0.9f });
 		Vector3 visualPos = position_;
 		visualPos.y = position_.y - kRestHeight * (1.0f - heightScale);
 		visual_->SetTranslate(visualPos);
-		// ダメージを受けた直後は赤く、氷銃で減速中は水色に光らせる(それ以外は素の白)。
-		// 「当たったのに何も起きた感じがしない/なぜ動きが重いのか分からない」を防ぐための最小限の反応。
-		// 燃焼(burn)は毎フレーム ApplyDamage が呼ばれ続けるので、既存の赤フラッシュが自然に
-		// 点滅し続ける形で表現される(専用の色は別途用意しない)。
-		Vector4 tintColor{ 1.0f, 1.0f, 1.0f, 1.0f };
-		if (damageFlashTimer_ > 0.0f) {
-			tintColor = { 1.0f, 0.2f, 0.2f, 1.0f };
-		} else if (slowTimer_ > 0.0f) {
-			tintColor = { 0.3f, 0.75f, 1.0f, 1.0f };
-		}
 		visual_->GetMesh().SetColor(tintColor);
 		visual_->Update();
 	}
@@ -373,8 +503,90 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 }
 
 void Character::Draw() {
-	if (visual_) {
+	// アニメモデルがある場合は DrawAnimatedModel(Object3D パス)で描くのでここでは何もしない。
+	if (!animChara_ && visual_) {
 		visual_->Draw();
+	}
+}
+
+void Character::DispatchAnimatedSkinning(DirectXCore* dxCore) {
+	if (animChara_ && dxCore) {
+		animChara_->DispatchSkinning(dxCore);
+	}
+}
+
+void Character::DrawAnimatedModel(DirectXCore* dxCore) {
+	if (animChara_ && dxCore) {
+		animChara_->Draw(dxCore);
+	}
+}
+
+void Character::UpdateAnimationState(float dt, float moveX) {
+	if (!animChara_) return;
+
+	// ---- このフレームに発生した単発アクションを検出して再生タイマーを立てる ----
+	// hasPendingAttack_ / pendingProjectileSpawns_ / hasPendingThrow_ は Update() のこの時点では
+	// まだこのフレームの攻撃結果が入っている(GameScene が消費するのは Update() から戻った後)。
+	if (hasPendingThrow_) {
+		actionAnimClip_ = CLIP_THROW; actionAnimTimer_ = 0.34f;
+	} else if (!pendingProjectileSpawns_.empty()) {
+		actionAnimClip_ = CLIP_SHOOT; actionAnimTimer_ = 0.18f;   // 連射武器は毎発ここで延長される
+	} else if (hasPendingAttack_) {
+		actionAnimClip_ = CLIP_PUNCH; actionAnimTimer_ = 0.30f;
+	}
+
+	// 着地の瞬間を検出して Land を少しの間だけ優先させる。
+	if (grounded_ && !wasGrounded_ && !IsDead()) {
+		landTimer_ = 0.16f;
+	}
+	if (landTimer_ > 0.0f)     landTimer_ -= dt;
+	if (hitAnimTimer_ > 0.0f)  hitAnimTimer_ -= dt;
+	if (wallJumpAnimTimer_ > 0.0f) wallJumpAnimTimer_ -= dt;
+	if (actionAnimTimer_ > 0.0f)   actionAnimTimer_ -= dt;
+	wasGrounded_ = grounded_;
+
+	const bool moving = (moveX > 0.15f || moveX < -0.15f);
+
+	// ---- 優先度順にクリップを選ぶ ----
+	int want; bool loop;
+	if (IsDead()) {
+		want = CLIP_DEATH; loop = false;
+	} else if (hitAnimTimer_ > 0.0f) {
+		want = CLIP_HIT; loop = false;
+	} else if (wallJumpAnimTimer_ > 0.0f) {
+		want = CLIP_WALLJUMP; loop = false;
+	} else if (windupKind_ == WU_JUMP) {
+		want = CLIP_JUMP; loop = false;          // しゃがみ込みの予備動作
+	} else if (windupKind_ == WU_THROW) {
+		want = CLIP_THROW; loop = false;
+	} else if (windupKind_ == WU_MELEE) {
+		want = CLIP_PUNCH; loop = false;
+	} else if (actionAnimTimer_ > 0.0f && actionAnimClip_ >= 0) {
+		want = actionAnimClip_; loop = false;    // リリース後のフォロースルー
+	} else if (!grounded_) {
+		if (wallSliding_)                 { want = CLIP_WALLSLIDE; loop = true; }
+		else if (verticalVelocity_ > 0.1f) { want = CLIP_JUMP; loop = false; }
+		else                              { want = CLIP_FALL; loop = true; }
+	} else if (landTimer_ > 0.0f) {
+		want = CLIP_LAND; loop = false;
+	} else if (isCrouching_) {
+		want = moving ? CLIP_CROUCHWALK : CLIP_CROUCHIDLE; loop = true;
+	} else if (moving) {
+		want = CLIP_RUN; loop = true;
+	} else {
+		want = CLIP_IDLE; loop = true;
+	}
+
+	if (want != currentClipIndex_) {
+		const std::string path = ClipPath(want);
+		if (std::filesystem::exists(path)) {
+			currentClipIndex_ = want;
+			// ループ系はゆっくり、単発アクションはキビキビ切り替える。
+			const bool snappy = (want == CLIP_HIT || want == CLIP_SHOOT || want == CLIP_PUNCH
+				|| want == CLIP_THROW || want == CLIP_WALLJUMP || want == CLIP_LAND);
+			animChara_->PlayAnimation(path, snappy ? 0.07f : 0.14f);
+			animChara_->SetLoop(loop);
+		}
 	}
 }
 
@@ -384,8 +596,11 @@ void Character::UpdateWeaponModel() {
 	constexpr float kHandUp = 0.1f;      // 胸〜肩あたりに来るよう少し持ち上げる
 	constexpr float kModelScale = 1.0f;
 
-	const std::string dir = equippedWeapon_ ? equippedWeapon_->GetModelDirectory() : std::string();
-	const std::string file = equippedWeapon_ ? equippedWeapon_->GetModelFileName() : std::string();
+	// 投げの振りかぶり中は、手放し済みだが手に握っている演出として投げる武器を表示し続ける。
+	Weapon* shown = (windupKind_ == WU_THROW && pendingThrowWeapon_)
+		? pendingThrowWeapon_.get() : equippedWeapon_.get();
+	const std::string dir = shown ? shown->GetModelDirectory() : std::string();
+	const std::string file = shown ? shown->GetModelFileName() : std::string();
 
 	// 素手・モデル未指定・描画コンテキスト未設定 → モデルは出さない。
 	if (dir.empty() || file.empty() || !object3DManager_ || !weaponModelDxCore_) {
@@ -449,6 +664,11 @@ bool Character::ReceiveHit(const AttackHitbox& hitbox) {
 		return false;
 	}
 
+	hitAnimTimer_ = 0.28f;   // 被弾のけぞりアニメ
+	// のけぞりで踏み切り・パンチはキャンセル(投げは武器が既にコミット済みなので継続)。
+	if (windupKind_ == WU_JUMP || windupKind_ == WU_MELEE) {
+		windupKind_ = WU_NONE;
+	}
 	ApplyDamage(hitbox.damage);
 	// ノックバックは「攻撃した瞬間の攻撃側の向き」をそのまま使う(hitbox.knockbackDirX)。
 	// 自分の位置と命中位置(hitbox.center)から向きを逆算すると、密着距離では
@@ -613,6 +833,23 @@ void Character::ResetForNewRound(const Vector3& spawnPos) {
 		visual_->SetTranslate(position_);
 		visual_->GetMesh().SetColor({ 1.0f, 1.0f, 1.0f, 1.0f }); // 赤フラッシュが残ったまま次ラウンドへ持ち越さない
 	}
+	// アニメ状態も初期化(赤フラッシュ・死亡ポーズを次ラウンドへ持ち越さない)。
+	wasGrounded_ = true;
+	landTimer_ = 0.0f;
+	hitAnimTimer_ = 0.0f;
+	wallJumpAnimTimer_ = 0.0f;
+	actionAnimTimer_ = 0.0f;
+	actionAnimClip_ = -1;
+	windupKind_ = WU_NONE;
+	windupTimer_ = 0.0f;
+	if (animChara_) {
+		animChara_->SetMaterialColor(teamColor_);
+		currentClipIndex_ = CLIP_IDLE;
+		if (std::filesystem::exists(ClipPath(CLIP_IDLE))) {
+			animChara_->PlayAnimation(ClipPath(CLIP_IDLE), 0.0f);
+			animChara_->SetLoop(true);
+		}
+	}
 }
 
 void Character::OnImGuiInspector() {
@@ -630,6 +867,13 @@ void Character::OnImGuiInspector() {
 	ImGui::DragFloat3("Position", &position_.x, 0.1f);
 	if (ImGui::Button("Kill")) {
 		ApplyDamage(hp_);
+	}
+	if (animChara_) {
+		ImGui::Separator();
+		const int c = currentClipIndex_;
+		ImGui::Text("Anim clip: %s", (c >= 0 && c < CLIP_COUNT) ? kClipNames[c] : "(none)");
+		// 全キャラ共有。Blender→エンジンの向きずれをここで詰める。
+		ImGui::SliderFloat("Model Yaw Offset (shared)", &s_modelYawOffsetDeg, -180.0f, 180.0f);
 	}
 #endif
 }

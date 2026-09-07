@@ -6,6 +6,7 @@
 
 #include "IImGuiEditable.h"
 #include "Vector3.h"
+#include "Vector4.h"
 #include "Primitive/PrimitiveInstance.h"
 #include "Weapon/ProjectileSpawnRequest.h"
 
@@ -15,6 +16,10 @@ class Weapon;
 class Object3DManager;
 class Object3DInstance;
 class DirectXCore;
+class SkinningComputeManager;
+class SRVManager;
+class AnimatedModelInstance;
+class AnimatedObject3DInstance;
 
 /// <summary>
 /// 対戦キャラクターの共通実装(プレイヤー・AI 兼用)。
@@ -87,6 +92,24 @@ public:
 	/// GameScene が Initialize 直後に一度呼ぶ(未設定なら手元の武器モデルは表示されないだけ)。
 	/// </summary>
 	void SetWeaponRenderContext(Object3DManager* object3DManager, DirectXCore* dxCore);
+
+	/// <summary>
+	/// 見た目の仮 Box を、スキニング付きアニメモデル(Resources/Models/Player)に差し替える。
+	/// GameScene が Initialize 直後に一度呼ぶ。アセット(player.mesh)が無ければ何もせず Box のまま。
+	/// teamColor はマテリアルのティント色(プレイヤー=青 / 敵=赤)。被弾中は赤・氷結中は水色に上書きされる。
+	/// </summary>
+	void SetupAnimatedModel(Object3DManager* object3DManager,
+		SkinningComputeManager* skinningComputeManager, DirectXCore* dxCore, SRVManager* srvManager,
+		const Vector4& teamColor);
+
+	/// <summary>アニメモデルを使っているか(SetupAnimatedModel が成功したか)。</summary>
+	bool HasAnimatedModel() const { return animChara_ != nullptr; }
+
+	/// <summary>アニメモデルのスキニング(Compute)を Dispatch する。GameScene が Draw の先頭で呼ぶ。</summary>
+	void DispatchAnimatedSkinning(DirectXCore* dxCore);
+
+	/// <summary>アニメモデルを描画する。GameScene が Object3DManager::DrawSetting 後に呼ぶ。</summary>
+	void DrawAnimatedModel(DirectXCore* dxCore);
 
 	/// <summary>
 	/// 毎フレーム更新。すべての引数は「もう解決済みの意図」であり、Update 自身は
@@ -287,6 +310,13 @@ private:
 	static constexpr float kThrowForwardOffset = 1.0f;   // 投げる位置を自分の中心からどれだけ照準方向へ離すか
 	static constexpr float kThrowWallRestitution = 0.5f; // 投げた武器が壁で滑るように弾かれる程度(床は0=着地即静止)
 
+	// ---- 予備動作(windup) ----
+	// アニメの「実際に飛ぶ/投げる/当てる」フレームにゲーム内効果を合わせるための遅延。
+	// 値は generate_anims.py の各クリップのコミットフレームに対応させてある。
+	static constexpr float kJumpWindup  = 0.26f;  // しゃがみ込み → 踏み切り
+	static constexpr float kThrowWindup = 0.17f;  // 振りかぶり → リリース
+	static constexpr float kMeleeWindup = 0.15f;  // 引き → 打撃
+
 	/// <summary>CollisionSystem に自分用の Capsule コライダーを設定する(Initialize から呼ぶ)。</summary>
 	void SetupCollider();
 
@@ -315,6 +345,13 @@ private:
 	void SyncColliderToPose();
 
 	/// <summary>
+	/// 現在の状態(接地・移動・ジャンプ/落下・死亡)から再生すべきアニメクリップを選び、
+	/// 変わっていれば animChara_->PlayAnimation する。Update() の末尾で毎フレーム呼ぶ。
+	/// クリップは Idle / Run / Jump / Fall / Land の5種のみ(壁ジャンプ等は暫定で Fall/Jump に寄せる)。
+	/// </summary>
+	void UpdateAnimationState(float dt, float moveX);
+
+	/// <summary>
 	/// 自分のコライダーが他のキャラのコライダーと重なったときに呼ばれるコールバック
 	/// (SetupCollider で Collider::onCollision に登録する)。
 	/// すり抜け防止のため、重なっている間だけ毎フレーム少しずつ横(X方向)へ押し離す。
@@ -329,10 +366,38 @@ private:
 	/// </summary>
 	void UpdateWeaponModel();
 
+	static constexpr float kModelScale = 1.0f;   // アニメモデルの表示スケール(Blender で約1.86m 相当)
+
 	std::string name_;
 	Camera* camera_ = nullptr;
 	const IStageQuery* stage_ = nullptr; // 地形当たり判定の問い合わせ先(未設定なら平床フォールバック)
-	std::unique_ptr<PrimitiveInstance> visual_; // 見た目用のBox。当たり判定(Capsule)とは別物
+	std::unique_ptr<PrimitiveInstance> visual_; // 見た目用のBox。アニメモデルが読めなかったときのフォールバック
+
+	// ---- アニメモデル(見た目の本命。SetupAnimatedModel で生成) ----
+	// animModel_(データ)を animChara_(描画実体)より長生きさせる。
+	std::unique_ptr<AnimatedModelInstance>    animModel_;
+	std::unique_ptr<AnimatedObject3DInstance> animChara_;
+	Object3DManager*        object3DManagerForAnim_ = nullptr;
+	SkinningComputeManager* skinningComputeManager_ = nullptr;
+	DirectXCore*            animDxCore_ = nullptr;
+	SRVManager*             srvManager_ = nullptr;
+	Vector4 teamColor_{ 1.0f, 1.0f, 1.0f, 1.0f };  // プレイヤー=青 / 敵=赤
+	int   currentClipIndex_ = -1;                  // 今 animChara_ が再生中のクリップ index(-1=未設定)
+	bool  wasGrounded_ = true;                     // 前フレームの接地状態(着地の瞬間検出用)
+	float landTimer_ = 0.0f;                       // 0より大きい間は Land クリップを優先
+	float hitAnimTimer_ = 0.0f;                    // 被弾のけぞり(Hit)を再生する残り秒(ReceiveHit でセット)
+	float wallJumpAnimTimer_ = 0.0f;               // 壁蹴り(WallJump)を再生する残り秒(Update の壁ジャンプ分岐でセット)
+	float actionAnimTimer_ = 0.0f;                 // 攻撃/投げの余韻(Shoot/Punch/Throw)を再生する残り秒
+	int   actionAnimClip_ = -1;                    // actionAnimTimer_ > 0 の間再生するクリップ index
+
+	// ---- 予備動作(windup)の進行状態 ----
+	// 0=なし / 1=ジャンプ / 2=投げ / 3=近接。windupTimer_ が 0 を跨いだフレームで効果を発動する。
+	int   windupKind_ = 0;
+	float windupTimer_ = 0.0f;
+	float windupAimX_ = 1.0f;   // 発動時に使う照準(トリガー時点で確定)
+	float windupAimY_ = 0.0f;
+	Vector3 windupHitOffset_{ 0.0f, 0.0f, 0.0f }; // 近接: トリガー時の「中心→ヒットボックス中心」の相対
+	AttackHitbox windupHitbox_{};                 // 近接: 発動時に詰めるヒットボックスの雛形
 
 	// ---- トランスフォーム・物理状態 ----
 	Vector3 position_{ 0.0f, kRestHeight, 0.0f }; // ワールド座標(ボックスの中心)。当たり判定もここを基準にする
