@@ -281,6 +281,7 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 		verticalVelocity_ = kJumpSpeed;
 		grounded_ = false;
 		coyoteTimer_ = 0.0f;   // 踏み切り後は空中ジャンプさせない
+		jumpEffectPending_ = true;
 	}
 	// しゃがみ中はジャンプできない(しゃがみを解除してから)。
 	if (jumpTriggered && !isCrouching_ && windupKind_ == WU_NONE) {
@@ -295,6 +296,7 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 			// ジャンプにディレイを入れたぶん、端の踏み外しで損しないための救済。
 			verticalVelocity_ = kJumpSpeed;
 			coyoteTimer_ = 0.0f;
+			jumpEffectPending_ = true;
 		} else if (wallContactDir_ != 0) {
 			// ---- 壁ジャンプ ----
 			// 空中で壁に密着していればジャンプ入力で壁と反対方向へ蹴って跳ぶ。
@@ -559,6 +561,7 @@ void Character::UpdateAnimationState(float dt, float moveX) {
 	// 着地の瞬間を検出して Land を少しの間だけ優先させる。
 	if (grounded_ && !wasGrounded_ && !IsDead()) {
 		landTimer_ = 0.16f;
+		landEffectPending_ = true;
 	}
 	if (landTimer_ > 0.0f)     landTimer_ -= dt;
 	if (hitAnimTimer_ > 0.0f)  hitAnimTimer_ -= dt;
@@ -873,6 +876,8 @@ void Character::ResetForNewRound(const Vector3& spawnPos) {
 	// アニメ状態も初期化(赤フラッシュ・死亡ポーズを次ラウンドへ持ち越さない)。
 	wasGrounded_ = true;
 	landTimer_ = 0.0f;
+	jumpEffectPending_ = false;
+	landEffectPending_ = false;
 	hitAnimTimer_ = 0.0f;
 	wallJumpAnimTimer_ = 0.0f;
 	actionAnimTimer_ = 0.0f;
