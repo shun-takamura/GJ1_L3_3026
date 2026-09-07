@@ -204,8 +204,8 @@ public:
 
 	/// <summary>
 	/// HPを全回復し、ノックバック速度や落下速度もクリアして spawnPos へ再配置する。
-	/// あくまで「その場でテストを続けられるようにするための仮リセット」であり、
-	/// セット10ポイント先取や次ステージ選出といった本物のラウンド進行はフェーズ5の別タスク。
+	/// 得点によるその場リセットと、ステージ丸ごと切替(GameScene::LoadStage)の
+	/// どちらからも呼ばれる(GameScene::CheckKnockoutAndReset / MatchRule 参照)。
 	/// </summary>
 	void ResetForNewRound(const Vector3& spawnPos);
 

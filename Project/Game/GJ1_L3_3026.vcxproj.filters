@@ -22,6 +22,9 @@
     <Filter Include="AI">
       <UniqueIdentifier>{e5f6a7b8-9c1d-4e2f-8a3b-4d5e6f7a8b9c}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Match">
+      <UniqueIdentifier>{f6a7b8c9-1d2e-4f3a-9b4c-5d6e7f8a9b1c}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
@@ -36,6 +39,9 @@
       <Filter>Scene</Filter>
     </ClCompile>
     <ClCompile Include="Scene\GameScene.cpp">
+      <Filter>Scene</Filter>
+    </ClCompile>
+    <ClCompile Include="Scene\ResultScene.cpp">
       <Filter>Scene</Filter>
     </ClCompile>
     <ClCompile Include="Scene\Transition\BaseTransition.cpp">
@@ -113,6 +119,12 @@
     <ClCompile Include="AI\PlayerModel.cpp">
       <Filter>AI</Filter>
     </ClCompile>
+    <ClCompile Include="Match\MatchRule.cpp">
+      <Filter>Match</Filter>
+    </ClCompile>
+    <ClCompile Include="Match\MatchResultRelay.cpp">
+      <Filter>Match</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="GameApp.h" />
@@ -126,6 +138,9 @@
       <Filter>Scene</Filter>
     </ClInclude>
     <ClInclude Include="Scene\GameScene.h">
+      <Filter>Scene</Filter>
+    </ClInclude>
+    <ClInclude Include="Scene\ResultScene.h">
       <Filter>Scene</Filter>
     </ClInclude>
     <ClInclude Include="Scene\Transition\BaseTransition.h">
@@ -157,6 +172,12 @@
     </ClInclude>
     <ClInclude Include="AI\PlayerModel.h">
       <Filter>AI</Filter>
+    </ClInclude>
+    <ClInclude Include="Match\MatchRule.h">
+      <Filter>Match</Filter>
+    </ClInclude>
+    <ClInclude Include="Match\MatchResultRelay.h">
+      <Filter>Match</Filter>
     </ClInclude>
     <ClInclude Include="Stage\StageGrid.h">
       <Filter>Stage</Filter>

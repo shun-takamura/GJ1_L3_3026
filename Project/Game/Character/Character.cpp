@@ -640,9 +640,23 @@ void Character::UpdateWeaponModel() {
 		weaponModelKey_ = key;
 	}
 
-	// 照準方向へ向ける(横視点なので画面平面 = Z 軸まわりの回転)。
-	const float aimAngle = std::atan2(aimDirY_, aimDirX_);
-	weaponModel_->SetRotate({ 0.0f, 0.0f, aimAngle });
+	// 照準方向へ向ける。
+	//
+	// 本体(animChara_、500行)と同じく「左右は反転(ミラー)」「上下はモデルを傾ける」の
+	// 2段構えにする。素朴に Z 軸だけでフル回転させると、左を狙うたびに上方向が
+	// ワールド下方向へ回り込んでモデルが上下逆さまになってしまう(症状として報告されたバグ)。
+	//
+	// さらに、武器メッシュは cook 時の OBJ→mesh 変換(RH→LH のため頂点X座標を反転。
+	// cook_assets.py 参照)の影響で、ローカル -X が銃口方向になっている
+	// (generate_weapon_model.py の規約は +X=銃口方向だが、cook でそれが反転される)。
+	// そのため本体(500行、+X=画面右向きモデル)とは yaw の 0/π が入れ替わっている。
+	const float facingSign = (aimDirX_ >= 0.0f) ? 1.0f : -1.0f;
+	const float weaponYaw = (facingSign >= 0.0f) ? kPi : 0.0f;
+	// tiltAngle に facingSign を掛けているのは、上の yaw で左右反転した側だと
+	// Z回転(上下の傾き)の効き方がミラーで逆になるため。狙った通りに動かない場合は
+	// まずこの符号(facingSign * aimDirY_ の掛け方)を疑うこと。
+	const float tiltAngle = std::atan2(facingSign * aimDirY_, std::fabs(aimDirX_));
+	weaponModel_->SetRotate({ 0.0f, weaponYaw, tiltAngle });
 	weaponModel_->SetTranslate({
 		position_.x + aimDirX_ * kHandForward,
 		position_.y + aimDirY_ * kHandForward + kHandUp,
@@ -827,8 +841,8 @@ void Character::ApplyBurn(float dps, float duration) {
 
 void Character::ResetForNewRound(const Vector3& spawnPos) {
 	// HP・速度・しゃがみ/接地状態・攻撃クールダウンをすべて初期状態に戻し、spawnPos へ再配置する。
-	// 本物の「ラウンド進行」(10ポイント先取・次ステージ選出など)はフェーズ5の別タスクで、
-	// これはあくまで GameScene がその場でテストを続けられるようにするための仮リセット。
+	// GameScene::CheckKnockoutAndReset(得点直後のその場リセット)と GameScene::LoadStage
+	// (ランダムなステージへの丸ごと切替)の両方から呼ばれる。
 	hp_ = kMaxHP;
 	position_ = spawnPos;
 	knockbackVelocityX_ = 0.0f;
