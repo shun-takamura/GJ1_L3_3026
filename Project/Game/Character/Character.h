@@ -194,6 +194,17 @@ public:
 
 	/// <summary>接地しているか。AI の学習(プレイヤーのジャンプ頻度計測)用に公開。</summary>
 	bool IsGrounded() const { return grounded_; }
+
+	/// <summary>
+	/// 直前の Update() でジャンプの踏み切りが発生していれば true を返し、フラグを消費する
+	/// (接地ジャンプ・コヨーテジャンプが対象)。GameScene が足元にジャンプエフェクトを出すのに使う。
+	/// </summary>
+	bool ConsumeJumpEffect() { bool v = jumpEffectPending_; jumpEffectPending_ = false; return v; }
+	/// <summary>
+	/// 直前の Update() で着地の瞬間が発生していれば true を返し、フラグを消費する。
+	/// GameScene が足元に着地エフェクトを出すのに使う。
+	/// </summary>
+	bool ConsumeLandEffect() { bool v = landEffectPending_; landEffectPending_ = false; return v; }
 	/// <summary>しゃがみ中か。AI の学習(しゃがみ回避の癖の計測)用に公開。</summary>
 	bool IsCrouching() const { return isCrouching_; }
 
@@ -385,6 +396,8 @@ private:
 	Vector4 teamColor_{ 1.0f, 1.0f, 1.0f, 1.0f };  // プレイヤー=青 / 敵=赤
 	int   currentClipIndex_ = -1;                  // 今 animChara_ が再生中のクリップ index(-1=未設定)
 	bool  wasGrounded_ = true;                     // 前フレームの接地状態(着地の瞬間検出用)
+	bool  jumpEffectPending_ = false;              // 今フレーム踏み切りが起きた(ConsumeJumpEffect 待ち)
+	bool  landEffectPending_ = false;              // 今フレーム着地した(ConsumeLandEffect 待ち)
 	float landTimer_ = 0.0f;                       // 0より大きい間は Land クリップを優先
 	float hitAnimTimer_ = 0.0f;                    // 被弾のけぞり(Hit)を再生する残り秒(ReceiveHit でセット)
 	float wallJumpAnimTimer_ = 0.0f;               // 壁蹴り(WallJump)を再生する残り秒(Update の壁ジャンプ分岐でセット)
