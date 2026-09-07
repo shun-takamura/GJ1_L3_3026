@@ -213,6 +213,15 @@ void StageGrid::BuildTilesAndGimmicks() {
 				mesh.SetDepthWrite(true);
 				mesh.SetCullBackface(true);
 				mesh.SetColor(color);
+
+				// ベルトは tread テクスチャ + UV スクロールでキャタピラの回転を表現する
+				// (スキニング不要。実際のスクロールは Update() で毎フレーム SetUVOffset)。
+				if (type == GimmickType::BeltLeft || type == GimmickType::BeltRight) {
+					mesh.SetTexture("Resources/Textures/Belt_Tread.dds");
+					mesh.SetUVScale({ kBeltTilesU, 1.0f });
+					// このメッシュ面では +U = 画面左。搬送方向へシェブロンが向くよう右ベルトで U 反転。
+					mesh.SetUVFlipU(type == GimmickType::BeltRight);
+				}
 			}
 
 			gimmickIndex_[cy][cx] = static_cast<int>(gimmicks_.size());
@@ -256,8 +265,17 @@ void StageGrid::Update(float dt) {
 		}
 	}
 
+	// ベルト tread の UV スクロール位相を進める。dt は GameScene 側で TimeGroup 済みなので、
+	// ヒットストップ/スロー中はベルトの見た目も一緒に止まる(BeltShiftX の搬送量と歩調が合う)。
+	beltUvOffset_ = std::fmod(beltUvOffset_ + kBeltUvSpeed * dt, 1.0f);
+
 	for (auto& g : gimmicks_) {
 		if (!g.destroyed && g.visual) {
+			if (g.type == GimmickType::BeltLeft || g.type == GimmickType::BeltRight) {
+				// +U = 画面左なので、右搬送(+X)はオフセットを減らす向き。
+				const float dir = (g.type == GimmickType::BeltRight) ? -1.0f : 1.0f;
+				g.visual->GetMesh().SetUVOffset({ dir * beltUvOffset_, 0.0f });
+			}
 			g.visual->Update();
 		}
 		if (!g.destroyed && g.model) {
@@ -313,6 +331,16 @@ int StageGrid::BeltDirUnderAabb(const Vector3& center, const Vector3& half, floa
 		}
 	}
 	return 0;
+}
+
+int StageGrid::BeltDirAtPoint(float worldX, float worldY) const {
+	int cx, cy;
+	WorldToCell({ worldX, worldY, 0.0f }, cx, cy);
+	switch (GimmickTypeAtCell(cx, cy)) {
+	case GimmickType::BeltLeft:  return -1;
+	case GimmickType::BeltRight: return 1;
+	default: return 0;
+	}
 }
 
 bool StageGrid::OverlapsSpike(const Vector3& center, const Vector3& half) const {
