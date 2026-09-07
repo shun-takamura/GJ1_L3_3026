@@ -97,6 +97,38 @@ void Character::ResolveBodyBlock(IImGuiEditable* other) {
 	position_.x += awayX * kBodyPushPerFrame;
 }
 
+int Character::DetectWallContact() const {
+	if (!stage_) {
+		return 0; // 平床フォールバックには壁の概念が無い
+	}
+	// 姿勢に合わせた当たり判定の中心・半高(MoveAabb に渡しているものと同じ考え方)。
+	const float heightScale = isCrouching_ ? kCrouchHeightScale : 1.0f;
+	const float centerYOffset = -kRestHeight * (1.0f - heightScale);
+	// 床・天井を「壁」と誤検出しないよう、プローブは体より少し薄い縦幅にする。
+	const Vector3 probeHalf{ kWallProbeReach, kRestHeight * heightScale * 0.6f, kCapsuleRadius };
+	const float cy = position_.y + centerYOffset;
+	// 体の側面のすぐ外側(kCapsuleRadius + kWallProbeReach ぶん外)に solid セルがあるか。
+	const Vector3 rightC{ position_.x + kCapsuleRadius + kWallProbeReach, cy, position_.z };
+	if (stage_->OverlapsSolid(rightC, probeHalf)) {
+		return +1;
+	}
+	const Vector3 leftC{ position_.x - kCapsuleRadius - kWallProbeReach, cy, position_.z };
+	if (stage_->OverlapsSolid(leftC, probeHalf)) {
+		return -1;
+	}
+	return 0;
+}
+
+bool Character::HasSolidBelow(float reach) const {
+	if (!stage_) {
+		return true; // 平床フォールバックでは常に床がある扱い
+	}
+	// 足元(position_.y - kRestHeight)から下へ reach ぶんの薄い箱に solid セルが重なるか。
+	const Vector3 half{ kCapsuleRadius * 0.9f, reach * 0.5f, kCapsuleRadius };
+	const Vector3 center{ position_.x, position_.y - kRestHeight - reach * 0.5f, position_.z };
+	return stage_->OverlapsSolid(center, half);
+}
+
 void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHeld,
 	float aimDirX, float aimDirY, bool attackTriggered, bool attackHeld, bool throwTriggered) {
 	// このフレームの移動前の位置。地形当たり判定は「開始位置 → 積分後の位置」で一度だけ解決する。
@@ -113,6 +145,22 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 		}
 	}
 	isCrouching_ = wantCrouch;
+
+	// ---- 壁接触の検出 / 壁ジャンプ直後の入力ロック ----
+	// この時点の position_ はまだこのフレームの移動を積分していない(startPos と同じ)。
+	// 左右どちらの壁に密着しているかを先に確定させ、壁ジャンプ・壁ずり落ちの判定に使う。
+	wallContactDir_ = DetectWallContact();
+	wallSliding_ = false;
+	if (wallJumpInputLockTimer_ > 0.0f) {
+		wallJumpInputLockTimer_ -= dt;
+		// 壁ジャンプ直後は、蹴った壁の方向へ入力しても少しの間は無視する
+		// (壁へ張り付き直して連続で登れてしまうのを防ぐ&反対方向へ流す猶予を作る)。
+		if (wallJumpLockDir_ > 0 && moveX > 0.0f) moveX = 0.0f;
+		else if (wallJumpLockDir_ < 0 && moveX < 0.0f) moveX = 0.0f;
+	}
+	// 壁方向へ移動入力しているか(壁ジャンプ・壁ずり落ちの共通条件)。上の入力ロック適用後の moveX で見る。
+	const bool pressingIntoWall =
+		(wallContactDir_ > 0 && moveX > 0.0001f) || (wallContactDir_ < 0 && moveX < -0.0001f);
 
 	// ---- 左右移動(X軸のみ。横視点なので奥行き方向には動かない) ----
 	// しゃがみ中も移動できる(しゃがみ歩き)。ただし速度は kCrouchMoveScale 倍に落ちる。
@@ -135,13 +183,42 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 	if (damping < 0.0f) damping = 0.0f; // dt が大きすぎて減衰が負になる(＝逆向きに加速する)事故を防ぐ
 	knockbackVelocityX_ *= damping;
 
+	// ---- 壁ジャンプで壁と反対方向へ与えた水平速度(時間経過で0へ減衰) ----
+	// ノックバックとは別枠。減衰が緩い(kWallJumpPushDamping)ので、壁ジャンプ後にしばらく
+	// 壁と反対方向へ流れ続ける。壁方向の入力ロック(上)と合わせて「壁から離れる」挙動になる。
+	position_.x += wallJumpVelocityX_ * dt;
+	float wallJumpDamp = 1.0f - kWallJumpPushDamping * dt;
+	if (wallJumpDamp < 0.0f) wallJumpDamp = 0.0f;
+	wallJumpVelocityX_ *= wallJumpDamp;
+
 	// ---- 重力・ジャンプ ----
 	// しゃがみ中はジャンプできない(しゃがみを解除してから)。
 	if (jumpTriggered && grounded_ && !isCrouching_) {
 		verticalVelocity_ = kJumpSpeed;
 		grounded_ = false;
+	} else if (jumpTriggered && !grounded_ && !isCrouching_ && wallContactDir_ != 0) {
+		// ---- 壁ジャンプ ----
+		// 空中で壁に密着していればジャンプ入力で壁と反対方向へ蹴って跳ぶ。
+		// 壁方向へ入力し続けると、跳ねて離れた後に重力を受けながら壁へ近づき直し、
+		// 前回より上で再び密着して次の壁ジャンプができる(繰り返すと少しずつ登れる)。
+		verticalVelocity_ = kWallJumpUpSpeed;
+		wallJumpVelocityX_ = -static_cast<float>(wallContactDir_) * kWallJumpPushXSpeed;
+		wallJumpInputLockTimer_ = kWallJumpInputLockTime;
+		wallJumpLockDir_ = wallContactDir_; // 蹴った壁の方向への入力を少しの間打ち消す
 	}
+
+	// ---- 壁ずり落ち ----
+	// 空中で壁に密着し、その壁方向へ入力していて、かつ足元にブロックが無い(=そのまま落ちる)とき、
+	// 落下速度に上限を掛けてゆっくり滑り落ちるようにする。上昇中や壁ジャンプ直後は掛けない。
+	if (!grounded_ && !isCrouching_ && wallContactDir_ != 0 && pressingIntoWall &&
+		verticalVelocity_ < 0.0f && !HasSolidBelow(kWallSlideGroundProbe)) {
+		wallSliding_ = true;
+	}
+
 	verticalVelocity_ += kGravity * dt; // 重力を毎フレーム加速度として積分
+	if (wallSliding_ && verticalVelocity_ < -kWallSlideMaxFallSpeed) {
+		verticalVelocity_ = -kWallSlideMaxFallSpeed; // 壁ずり落ち中は落下速度を頭打ちにする
+	}
 	position_.y += verticalVelocity_ * dt;
 
 	// ---- 地形との当たり判定 ----
@@ -166,7 +243,8 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 			verticalVelocity_ = 0.0f; // 天井に頭をぶつけたら上昇を止める
 		}
 		if (mv.hitWall) {
-			knockbackVelocityX_ = 0.0f; // 壁にめり込むノックバックはそこで止める
+			knockbackVelocityX_ = 0.0f;  // 壁にめり込むノックバックはそこで止める
+			wallJumpVelocityX_ = 0.0f;   // 壁ジャンプ直後にすぐ別の壁(通路)へ当たったらそこで止める
 		}
 	} else {
 		// stage 未設定時のフォールバック: 常に y=kRestHeight に平床がある前提。
@@ -513,6 +591,11 @@ void Character::ResetForNewRound(const Vector3& spawnPos) {
 	position_ = spawnPos;
 	knockbackVelocityX_ = 0.0f;
 	verticalVelocity_ = 0.0f;
+	wallJumpVelocityX_ = 0.0f;
+	wallJumpInputLockTimer_ = 0.0f;
+	wallJumpLockDir_ = 0;
+	wallContactDir_ = 0;
+	wallSliding_ = false;
 	grounded_ = true;
 	isCrouching_ = false;
 	SyncColliderToPose(); // 立ち姿勢のカプセルへ戻す

@@ -174,6 +174,11 @@ public:
 	/// <summary>しゃがみ中か。AI の学習(しゃがみ回避の癖の計測)用に公開。</summary>
 	bool IsCrouching() const { return isCrouching_; }
 
+	/// <summary>今フレームの壁接触方向(-1=左に壁 / +1=右に壁 / 0=なし)。HUD・AI 用に公開。</summary>
+	int GetWallContactDir() const { return wallContactDir_; }
+	/// <summary>今フレーム壁ずり落ち(落下速度が緩む状態)が働いているか。HUD・AI 用に公開。</summary>
+	bool IsWallSliding() const { return wallSliding_; }
+
 	/// <summary>
 	/// HPを全回復し、ノックバック速度や落下速度もクリアして spawnPos へ再配置する。
 	/// あくまで「その場でテストを続けられるようにするための仮リセット」であり、
@@ -261,6 +266,15 @@ private:
 	static constexpr float kCrouchMoveScale = 0.5f;       // しゃがみ歩きの速度倍率(通常移動に対して)
 	static constexpr float kDamageFlashDuration = 0.15f;  // ダメージを受けたときに見た目を赤くする秒数
 
+	// ---- 壁ジャンプ / 壁ずり落ち パラメータ ----
+	static constexpr float kWallJumpUpSpeed = 11.0f;        // 壁ジャンプ時の上向き初速(繰り返すと少しずつ登れる程度に控えめ)
+	static constexpr float kWallJumpPushXSpeed = 9.0f;     // 壁ジャンプ時、壁と反対方向へ与える水平初速
+	static constexpr float kWallJumpPushDamping = 3.0f;    // 上の水平初速の減衰係数(ノックバックより緩め=しばらく反対へ流れる)
+	static constexpr float kWallJumpInputLockTime = 0.30f; // 壁ジャンプ後、壁方向への移動入力を打ち消す秒数(壁との接触を一度切るのに必要な最小限)
+	static constexpr float kWallSlideMaxFallSpeed = 6.0f;  // 壁ずり落ち中の落下速度の上限(通常の自由落下より遅くなる)
+	static constexpr float kWallProbeReach = 0.08f;        // 体の外側どこまでを「壁に密着」と見なすか
+	static constexpr float kWallSlideGroundProbe = 1.0f;   // 足元この距離までブロックが無ければ壁ずり落ちを有効にする
+
 	// ---- 投げ捨てパラメータ ----
 	// 「今何を持っているか」に関わらず固定値(残弾ゼロの銃を投げても同じ威力)。
 	// 弾道は銃弾と同じ放物線(ArcingProjectile)を使う。
@@ -275,6 +289,19 @@ private:
 
 	/// <summary>CollisionSystem に自分用の Capsule コライダーを設定する(Initialize から呼ぶ)。</summary>
 	void SetupCollider();
+
+	/// <summary>
+	/// 現在位置の左右に solid セルが密着しているかを stage_->OverlapsSolid で調べる。
+	/// 右に壁なら +1、左に壁なら -1、どちらでもなければ 0(右を優先)。
+	/// stage_ 未設定なら常に 0(平床フォールバックには壁が無い)。
+	/// </summary>
+	int DetectWallContact() const;
+
+	/// <summary>
+	/// 足元から reach の距離までの間に solid セルがあるか(壁ずり落ちの「下にブロックが無い」判定用)。
+	/// stage_ 未設定なら常に true(平床フォールバックでは常に床がある扱い)。
+	/// </summary>
+	bool HasSolidBelow(float reach) const;
 
 	/// <summary>
 	/// 現在の姿勢(立ち/しゃがみ)に応じた当たり判定カプセルの中心・円柱高さ・半径を返す。
@@ -313,6 +340,13 @@ private:
 	float aimDirY_ = 0.0f;                        // マウス/右スティックが未入力のフレームは直前の値を維持する
 	float knockbackVelocityX_ = 0.0f;             // ノックバックによる水平速度。時間経過で0へ減衰していく
 	float verticalVelocity_ = 0.0f;               // 重力・ジャンプによる垂直速度
+
+	// ---- 壁ジャンプ / 壁ずり落ち 状態 ----
+	float wallJumpVelocityX_ = 0.0f;      // 壁ジャンプで壁と反対方向へ与えた水平速度。時間経過で0へ減衰
+	float wallJumpInputLockTimer_ = 0.0f; // 0より大きい間、wallJumpLockDir_ 方向への moveX を打ち消す
+	int   wallJumpLockDir_ = 0;           // 打ち消す向き(+1=右入力を無効 / -1=左入力を無効)
+	int   wallContactDir_ = 0;            // 今フレームの壁接触方向(-1=左に壁 / +1=右に壁 / 0=なし)
+	bool  wallSliding_ = false;           // 今フレーム壁ずり落ち(落下速度クランプ)が働いているか
 
 	// ---- 状態異常(氷銃・炎銃用。ApplySlow/ApplyBurn 参照) ----
 	float slowMultiplier_ = 1.0f; // 1.0=通常速度。slowTimer_ が尽きたら1.0へ戻る

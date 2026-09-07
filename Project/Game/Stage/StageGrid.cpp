@@ -381,8 +381,8 @@ void StageGrid::DetonateBomb(Gimmick& bomb) {
 	const Vector3 center = CellToWorldCenter(bomb.cx, bomb.cy);
 	const float radius = kBombRadiusCells * kCellSize;
 
-	// 壊れる床を爆風半径ぶん削る。
-	DamageSphere(center, radius, kBombDamage);
+	// 壊れる床を爆風半径ぶん削る（爆弾ブロックで壊れた床はラウンドリセットでも復活しない）。
+	DamageSphere(center, radius, kBombDamage, /*permanent=*/true);
 
 	// キャラへの適用は GameScene 側（吹っ飛ばしはリアルな放射方向で）。
 	pendingBombExplosions_.push_back({ center, radius, kBombDamage });
@@ -407,7 +407,7 @@ std::vector<StageGrid::BombExplosion> StageGrid::ConsumeBombExplosions() {
 	return out;
 }
 
-int StageGrid::DamageSphere(const Vector3& center, float radius, float damage) {
+int StageGrid::DamageSphere(const Vector3& center, float radius, float damage, bool permanent) {
 	int broke = 0;
 	const float half = kCellSize * 0.5f;
 	const float r2 = radius * radius;
@@ -429,6 +429,9 @@ int StageGrid::DamageSphere(const Vector3& center, float radius, float damage) {
 		t.hp -= damage;
 		if (t.hp <= 0.0f) {
 			t.destroyed = true;
+			if (permanent) {
+				t.permanentlyDestroyed = true; // ResetTerrain でも復活させない
+			}
 			++broke;
 		} else if (t.visual) {
 			// 破壊されるまでは見た目の変化が無く「本当にダメージが通っているのか」が
@@ -442,6 +445,9 @@ int StageGrid::DamageSphere(const Vector3& center, float radius, float damage) {
 
 void StageGrid::ResetTerrain() {
 	for (auto& t : tiles_) {
+		if (t.permanentlyDestroyed) {
+			continue; // 爆弾ブロックの爆風で壊れた床は復活させない
+		}
 		if (t.value / 10 == kKindBreakable) {
 			t.hp = kBreakableHP;
 			if (t.visual) {
@@ -468,10 +474,11 @@ bool StageGrid::IsSolidCell(int cx, int cy) const {
 	if (kind == kKindUnbreakable || kind == kKindBreakable) {
 		return true;
 	}
-	// ベルトコンベア（30/31）は「上に乗れる」ように床として扱う。
-	// トゲ・爆弾・ポータルはすり抜ける（非ソリッド）。
+	// ベルトコンベア（30/31）は乗れるように、爆弾ブロック（33）は通常ブロックと同じく
+	// 床・壁として扱う（起爆して destroyed になった時点で GimmickTypeAtCell が None を返し非ソリッドへ）。
+	// トゲ・ポータルはすり抜ける（非ソリッド）。
 	const GimmickType g = GimmickTypeAtCell(cx, cy);
-	return g == GimmickType::BeltLeft || g == GimmickType::BeltRight;
+	return g == GimmickType::BeltLeft || g == GimmickType::BeltRight || g == GimmickType::Bomb;
 }
 
 bool StageGrid::IsBreakableCell(int cx, int cy) const {
