@@ -120,6 +120,7 @@
     <ClCompile Include="Scene\SceneFactory.cpp" />
     <ClCompile Include="Scene\TitleScene.cpp" />
     <ClCompile Include="Scene\GameScene.cpp" />
+    <ClCompile Include="Scene\ResultScene.cpp" />
     <ClCompile Include="Scene\Transition\BaseTransition.cpp" />
     <ClCompile Include="Scene\Transition\FadeTransition.cpp" />
     <ClCompile Include="Scene\Transition\TransitionManager.cpp" />
@@ -145,6 +146,8 @@
     <ClCompile Include="AI\AINavigation.cpp" />
     <ClCompile Include="AI\EnemyBrain.cpp" />
     <ClCompile Include="AI\PlayerModel.cpp" />
+    <ClCompile Include="Match\MatchRule.cpp" />
+    <ClCompile Include="Match\MatchResultRelay.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="GameApp.h" />
@@ -152,6 +155,7 @@
     <ClInclude Include="Scene\SceneFactory.h" />
     <ClInclude Include="Scene\TitleScene.h" />
     <ClInclude Include="Scene\GameScene.h" />
+    <ClInclude Include="Scene\ResultScene.h" />
     <ClInclude Include="Scene\Transition\BaseTransition.h" />
     <ClInclude Include="Scene\Transition\FadeTransition.h" />
     <ClInclude Include="Scene\Transition\TransitionManager.h" />
@@ -162,6 +166,8 @@
     <ClInclude Include="AI\AINavigation.h" />
     <ClInclude Include="AI\EnemyBrain.h" />
     <ClInclude Include="AI\PlayerModel.h" />
+    <ClInclude Include="Match\MatchRule.h" />
+    <ClInclude Include="Match\MatchResultRelay.h" />
     <ClInclude Include="Stage\StageGrid.h" />
     <ClInclude Include="Stage\StageCatalog.h" />
     <ClInclude Include="Weapon\ProjectileSpawnRequest.h" />

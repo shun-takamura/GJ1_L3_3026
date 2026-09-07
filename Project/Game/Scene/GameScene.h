@@ -16,6 +16,7 @@
 #include "AI/EnemyBrain.h"
 #include "AI/PlayerModel.h"
 #include "Common/CharacterInput.h"
+#include "Match/MatchRule.h"
 
 /// <summary>
 /// ゲーム本編の雛形(フェーズ1: 触れる最小プロトタイプ)。
@@ -32,9 +33,8 @@
 ///       - 攻撃したキャラのヒットボックスを、殴られた側の Character に橋渡しする(ResolveAttack)
 ///       - HP0 や場外(アリーナの形状に依存する判定)を見て勝敗を決める(CheckKnockoutAndReset)
 ///     はすべてこの GameScene の責務になる。
-///   - 場外・HP0の判定と、仮の得点カウント・その場リセットまではここで面倒を見るが、
-///     本物の「10ポイント先取・自動で次ステージへ遷移」といったラウンド進行は
-///     フェーズ5で別途実装する(今はテストを続けやすくするための簡易リセットのみ)。
+///   - 場外・HP0の判定、得点・勝敗(MatchRule)、1ポイント毎のランダムステージ切替、
+///     ラウンド開始前の3秒カウントダウンもここが面倒を見る(CheckKnockoutAndReset / roundState_ 参照)。
 ///
 /// ESC / (B) でタイトルへ戻る。
 /// </summary>
@@ -63,6 +63,14 @@ private:
 
 	/// <summary>ベルトコンベア・トゲ・ポータル・爆風をキャラへ適用する（player/enemy の Update 後に呼ぶ）。</summary>
 	void UpdateStageGimmicks(float dt);
+
+	/// <summary>
+	/// roundState_ == Battle のときだけ Update() から呼ばれる、通常のゲーム進行本体。
+	/// 入力→AI思考→Character::Update→当たり判定→ステージギミック→攻撃判定→弾/武器→
+	/// 場外/HP0判定(得点・ステージ切替・勝敗判定)までをすべてここで行う。
+	/// </summary>
+	/// <param name="playerInput">Update() が生の入力デバイスから組み立てた、プレイヤーの意図。</param>
+	void UpdateBattle(float dt, const CharacterInput& playerInput);
 
 	/// <summary>
 	/// 中心 center・半サイズ half の AABB が接地している足元セルがベルトコンベアなら、
@@ -107,9 +115,54 @@ private:
 	Vector3 playerSpawn_{};
 	Vector3 enemySpawn_{};
 
-	// 仮の得点(HP0 or 場外で+1)。本物のポイント管理・10本先取判定はフェーズ5
-	int playerPoints_ = 0;
-	int enemyPoints_ = 0;
+	// 得点・10ポイント先取の勝敗判定(HP0 or 場外で+1、CheckKnockoutAndReset から呼ぶ)。
+	MatchRule matchRule_;
+
+	//====================
+	// ラウンドの進行状態(Battle → RoundEnd → Countdown → Battle …)
+	//====================
+
+	/// <summary>
+	/// Battle = 通常のゲーム進行。
+	/// RoundEnd = 直前のラウンドの決着直後の猶予(誰が勝ったかを表示しつつ、ゲーム進行は止める)。
+	/// Countdown = 次のラウンド開始前の3秒待ち(操作/AI/攻撃/得点判定を止める)。
+	/// </summary>
+	enum class RoundState {
+		Battle,
+		RoundEnd,
+		Countdown,
+	};
+	RoundState roundState_ = RoundState::Countdown;
+	float countdownRemaining_ = 0.0f;
+	static constexpr float kRoundCountdownSeconds = 3.0f;
+
+	/// <summary>roundState_ を Countdown に戻し、kRoundCountdownSeconds 秒からカウントを始める。
+	/// ゲーム開始直後(Initialize)と、ステージ切替直後(LoadStage 後)の両方で呼ぶ。</summary>
+	void StartRoundCountdown();
+
+	/// <summary>
+	/// カウントダウン中の最小限の更新。両キャラは「入力なし」で Update するだけ
+	/// (重力・接地・アイドル姿勢は効くが、移動/ジャンプ/攻撃/投げ/AI思考/得点判定は一切行わない)。
+	/// 0秒を切ったら roundState_ を Battle に切り替える。
+	/// </summary>
+	void UpdateRoundCountdown(float dt);
+
+	// 撃破/場外の直後に挟む猶予。「どちらが勝ったか」を表示している間。
+	static constexpr float kRoundEndSeconds = 1.5f;
+	float roundEndRemaining_ = 0.0f;
+	// 猶予明けにやる一度きりの処理(次ステージ抽選 or Result 遷移)を既にやったか。
+	bool roundEndActionTaken_ = false;
+	// このラウンドで勝った側(Draw() の表示、猶予明けの分岐に使う)。
+	MatchRule::Winner roundEndWinnerSide_ = MatchRule::Winner::None;
+	// 猶予明けに Result シーンへ遷移すべきか(=このラウンドの得点でセットが決着した)。
+	bool roundEndMatchOver_ = false;
+
+	/// <summary>
+	/// 猶予中の最小限の更新(内容は UpdateRoundCountdown と同じ、中立入力での Update のみ)。
+	/// 0秒を切ったら一度だけ、roundEndMatchOver_ を見て次のランダムステージを予約するか
+	/// (pendingStageLoad_)、Result シーンへ遷移する(MatchResultRelay 経由)。
+	/// </summary>
+	void UpdateRoundEnd(float dt);
 
 	// 秒間隔でステージにランダムな武器を1つ湧かせるまでのカウントダウン。
 	static constexpr float kWeaponSpawnInterval = 8.0f;
@@ -159,19 +212,18 @@ private:
 	void ResolveAttack(Character& attacker, Character& defender, const char* attackerLabel);
 
 	/// <summary>
-	/// target が HP0 または場外(IsOutOfBounds)になっていないかを見て、
-	/// なっていれば other に1点入れてログを出し、両者をその場でリセットする
-	/// (仮リセット。本物のラウンド進行はフェーズ5)。
-	/// 何も起きなければ何もしない。
+	/// target が HP0 または場外(IsOutOfBounds)になっていないかを見て、なっていれば
+	/// matchRule_ 経由で得点を入れ、roundState_ を RoundEnd(誰が勝ったか表示しつつ待つ猶予)に
+	/// 切り替える。target はここではリスポーンさせない ── HP0 の死亡モーション(CLIP_DEATH)や
+	/// 場外の落下を、猶予中に最後まで見せるため。実際のリセットは次のラウンドへ進むときの
+	/// LoadStage に任せる(matchRule_ が決着していれば Result シーンへ遷移するだけでリセット不要)。
+	/// 猶予明けの実際の処理は UpdateRoundEnd が行う。何も起きなければ何もしない。
 	/// </summary>
 	/// <param name="target">場外/HP0をチェックする対象</param>
-	/// <param name="other">target をやられたことにした場合、得点が入る側</param>
-	/// <param name="otherPoints">other 側の得点カウンタへの参照(加算する)</param>
-	/// <param name="targetRespawn">target をリセットするときの再配置先</param>
+	/// <param name="otherSide">得点が入る側(target の相手)が Player/Enemy のどちらか</param>
 	/// <param name="targetLabel">ログ表示用のラベル("Player"等)</param>
-	/// <returns>この呼び出しで撃破/場外が発生し、リセットを行ったか。</returns>
-	bool CheckKnockoutAndReset(Character& target, Character& other,
-		int& otherPoints, const Vector3& targetRespawn, const char* targetLabel);
+	/// <returns>この呼び出しで撃破/場外が発生し、RoundEnd への切り替えを行ったか。</returns>
+	bool CheckKnockoutAndReset(Character& target, MatchRule::Winner otherSide, const char* targetLabel);
 
 	/// <summary>アリーナの左右境界(kArenaHalfExtentX)の外に出ているか。</summary>
 	bool IsOutOfBounds(const Vector3& pos) const;

@@ -33,6 +33,7 @@
 #include "Weapon/IceGun.h"
 #include "Weapon/FireGun.h"
 #include "Weapon/FireHazard.h"
+#include "Match/MatchResultRelay.h"
 #include "Effect/EffectManager.h"
 #include "Log.h"
 
@@ -243,8 +244,7 @@ void GameScene::Initialize() {
 	playerModel_ = std::make_unique<PlayerModel>();
 	playerModel_->Reset();
 
-	playerPoints_ = 0;
-	enemyPoints_ = 0;
+	matchRule_.Reset();
 
 	//===================================
 	// デバッグ: 銃のパラメータをImGuiで調整できるようにする
@@ -355,6 +355,9 @@ void GameScene::Initialize() {
 		});
 	}
 #endif
+
+	// 最初のラウンドも、得点によるステージ切替と同じく3秒カウントダウンを挟んでから始める。
+	StartRoundCountdown();
 }
 
 void GameScene::Finalize() {
@@ -409,6 +412,68 @@ void GameScene::LoadStage(int index) {
 
 	playerInPortal_ = false;
 	enemyInPortal_ = false;
+
+	// 新しいステージでの戦闘は、旧ステージでの決着直後にいきなり始めない。3秒待たせる。
+	StartRoundCountdown();
+}
+
+void GameScene::StartRoundCountdown() {
+	roundState_ = RoundState::Countdown;
+	countdownRemaining_ = kRoundCountdownSeconds;
+}
+
+void GameScene::UpdateRoundCountdown(float dt) {
+	// 操作・AI思考・攻撃・得点判定は止めるが、重力・接地・アイドル姿勢だけは効かせておく
+	// (カウントダウン明けにいきなり宙に浮いた状態から始まらないようにするため)。
+	const CharacterInput neutral{};
+	if (player_) {
+		player_->Update(dt, neutral.moveX, neutral.jumpTriggered, neutral.crouchHeld,
+			neutral.aimDirX, neutral.aimDirY, neutral.attackTriggered, neutral.attackHeld, neutral.throwTriggered);
+	}
+	if (enemy_) {
+		enemy_->Update(dt, neutral.moveX, neutral.jumpTriggered, neutral.crouchHeld,
+			neutral.aimDirX, neutral.aimDirY, neutral.attackTriggered, neutral.attackHeld, neutral.throwTriggered);
+	}
+	CollisionSystem::GetInstance()->Update();
+
+	countdownRemaining_ -= dt;
+	if (countdownRemaining_ <= 0.0f) {
+		roundState_ = RoundState::Battle;
+	}
+}
+
+void GameScene::UpdateRoundEnd(float dt) {
+	// カウントダウン中と同じく、操作/AI/攻撃/得点判定は止めるが重力・接地・アイドル姿勢だけ効かせる。
+	const CharacterInput neutral{};
+	if (player_) {
+		player_->Update(dt, neutral.moveX, neutral.jumpTriggered, neutral.crouchHeld,
+			neutral.aimDirX, neutral.aimDirY, neutral.attackTriggered, neutral.attackHeld, neutral.throwTriggered);
+	}
+	if (enemy_) {
+		enemy_->Update(dt, neutral.moveX, neutral.jumpTriggered, neutral.crouchHeld,
+			neutral.aimDirX, neutral.aimDirY, neutral.attackTriggered, neutral.attackHeld, neutral.throwTriggered);
+	}
+	CollisionSystem::GetInstance()->Update();
+
+	roundEndRemaining_ -= dt;
+	if (roundEndRemaining_ > 0.0f || roundEndActionTaken_) {
+		return;
+	}
+	// 猶予明け。ここから先は一度きり(roundEndActionTaken_ で多重実行を防ぐ。
+	// 猶予0秒後もこの関数は数フレーム呼ばれ続けるため、例えば Result への ChangeScene を
+	// 毎フレーム呼び直してフェードが終わらなくなる、といった事故を防ぐ)。
+	roundEndActionTaken_ = true;
+
+	if (roundEndMatchOver_) {
+		// このセットは決着。結果を relay に残して Result シーンへ(ステージ切替はしない)。
+		MatchResultRelay::SetResult(matchRule_.GetWinner(), matchRule_.GetPlayerPoints(), matchRule_.GetEnemyPoints());
+		SceneManager::GetInstance()->ChangeScene("Result", TransitionType::Fade);
+	} else {
+		// まだ決着していない。次のラウンドはランダムなステージで始める
+		// (実際の読み込みと地形の作り直しは次フレーム先頭の pendingStageLoad_ 解決で行う。
+		//  LoadStage が地形・スポーン位置・カウントダウンの再開始までまとめて面倒を見る)。
+		pendingStageLoad_ = stageCatalog_.PickRandomIndex();
+	}
 }
 
 float GameScene::BeltShiftX(const Vector3& center, const Vector3& half, float dt) const {
@@ -612,6 +677,39 @@ void GameScene::Update() {
 	playerInput.attackHeld = attackHeld;
 	playerInput.throwTriggered = throwTriggered;
 
+	// 決着直後の猶予(RoundEnd)・ラウンド開始前の3秒カウントダウン(Countdown)中は、
+	// ゲーム進行(入力・AI・攻撃・得点判定)を止める。
+	if (roundState_ == RoundState::Battle) {
+		UpdateBattle(dt, playerInput);
+	} else if (roundState_ == RoundState::RoundEnd) {
+		UpdateRoundEnd(dt);
+	} else {
+		UpdateRoundCountdown(dt);
+	}
+
+	//===================================
+	// デバッグ表示の残り時間を進める(実際の描画は Draw() 側)
+	//===================================
+	UpdateDebugFlashes(dt);
+
+	//===================================
+	// タイトルへ戻る
+	//===================================
+	bool back = false;
+	if (input_) {
+		if (auto* kb = input_->GetKeyboard()) {
+			back |= kb->TriggerKey(DIK_ESCAPE);
+		}
+		if (auto* pad = input_->GetController()) {
+			back |= pad->IsButtonTriggered(XINPUT_GAMEPAD_B);
+		}
+	}
+	if (back) {
+		SceneManager::GetInstance()->ChangeScene("Title", TransitionType::Fade);
+	}
+}
+
+void GameScene::UpdateBattle(float dt, const CharacterInput& playerInput) {
 	// 敵の意図は EnemyBrain が決める(入力デバイスは一切読まない)。
 	// 敵が素手のとき拾いに行けるよう、取得可能で最寄りの武器 pickup を渡す。
 	// 「真上の別プラットフォームにあって歩いても跳んでも届かない」もの、
@@ -752,9 +850,9 @@ void GameScene::Update() {
 	UpdateWeaponSpawner(dt);
 
 	//===================================
-	// 場外・HP0判定 → 仮の得点+その場リセット
-	// 本物の「10ポイント先取・次ステージへ自動遷移」といったラウンド進行はフェーズ5の別タスク。
-	// ここでは「テストを継続できること」を優先して、即座にリセットするだけにしている。
+	// 場外・HP0判定 → 得点(MatchRule)判定
+	// 決着していなければ次のラウンド用にランダムなステージ切替を予約し(CheckKnockoutAndReset 内)、
+	// 決着していれば Result シーンへ遷移する。
 	//===================================
 	// 各キャラの「やられ方」を、リセット前に記録しておく。
 	const bool enemyWasOutOfBounds = IsOutOfBounds(enemy_->GetPosition());
@@ -770,8 +868,8 @@ void GameScene::Update() {
 		pePairDist = std::sqrt(dx * dx + dy * dy);
 	}
 
-	const bool koPlayer = CheckKnockoutAndReset(*player_, *enemy_, enemyPoints_, playerSpawn_, "Player");
-	const bool koEnemy = CheckKnockoutAndReset(*enemy_, *player_, playerPoints_, enemySpawn_, "Enemy");
+	const bool koPlayer = CheckKnockoutAndReset(*player_, MatchRule::Winner::Enemy, "Player");
+	const bool koEnemy = CheckKnockoutAndReset(*enemy_, MatchRule::Winner::Player, "Enemy");
 	if (koPlayer || koEnemy) {
 		enemyBrain_->ResetForNewRound();
 	}
@@ -855,8 +953,7 @@ bool GameScene::IsOutOfBounds(const Vector3& pos) const {
 	return !stage_ || !stage_->IsPointInsideBounds(pos);
 }
 
-bool GameScene::CheckKnockoutAndReset(Character& target, Character& other,
-	int& otherPoints, const Vector3& targetRespawn, const char* targetLabel) {
+bool GameScene::CheckKnockoutAndReset(Character& target, MatchRule::Winner otherSide, const char* targetLabel) {
 
 	// target が生きていて、かつ場内にいるなら何も起きていない
 	if (!target.IsDead() && !IsOutOfBounds(target.GetPosition())) {
@@ -864,19 +961,25 @@ bool GameScene::CheckKnockoutAndReset(Character& target, Character& other,
 	}
 
 	// ここに来た = target がHP0になったか、アリーナ外に出た(=やられた)
-	otherPoints += 1;
 	Log(std::string(targetLabel) + " が撃破/場外。相手に1ポイント\n");
-
-	// 本物のラウンド進行(10ポイント先取・次ステージ選出)はフェーズ5の別タスク。
-	// ここではテストを継続できるよう、その場で両者をリセットするだけにしている
-	// (other は今の位置のまま、HPと速度だけ初期化してリスタートさせる)。
-	target.ResetForNewRound(targetRespawn);
-	other.ResetForNewRound(other.GetPosition());
-
-	// 壊れた床も元に戻して、次のラウンドを同じ地形で始められるようにする。
-	if (stage_) {
-		stage_->ResetTerrain();
+	const bool matchOver = matchRule_.AddPoint(otherSide);
+	if (matchOver) {
+		const char* winnerLabel = (matchRule_.GetWinner() == MatchRule::Winner::Player) ? "Player" : "Enemy";
+		Log(std::string(winnerLabel) + " が" + std::to_string(MatchRule::kPointsToWin) + "ポイント先取\n");
 	}
+
+	// ここでは target をリスポーンさせない。HP0 なら CLIP_DEATH の死亡モーションが
+	// (場外なら落下がそのまま)RoundEnd の猶予中に最後まで再生されるようにするため。
+	// target/other の実際のリセットは、次のラウンドへ進むときの LoadStage に任せる
+	// (matchRule_ が決着していれば Result シーンへ遷移するだけでそもそもリセット不要)。
+
+	// すぐには次のステージ/Result へ進まず、「どちらが勝ったか」を見せる猶予(RoundEnd)を挟む。
+	// 猶予明けの実際の処理(ステージ抽選 or Result 遷移)は UpdateRoundEnd が行う。
+	roundState_ = RoundState::RoundEnd;
+	roundEndRemaining_ = kRoundEndSeconds;
+	roundEndActionTaken_ = false;
+	roundEndWinnerSide_ = otherSide;
+	roundEndMatchOver_ = matchOver;
 	return true;
 }
 
@@ -1237,6 +1340,23 @@ void GameScene::Draw() {
 	//===================================
 	auto* tr = TextRenderer::GetInstance();
 	if (tr && tr->IsInitialized()) {
+		// ラウンド開始前の3秒カウントダウン、決着直後の「どちらが勝ったか」を
+		// 画面中央に大きく出す(TitleScene::Draw と同じセンタリング)。
+		if (roundState_ == RoundState::Countdown) {
+			char cd[8];
+			snprintf(cd, sizeof(cd), "%d", static_cast<int>(std::ceil(countdownRemaining_)));
+			const float w = static_cast<float>(WindowsApplication::kClientWidth);
+			const float cw = tr->MeasureWidth(cd, 3.0f);
+			tr->DrawText(cd, { (w - cw) * 0.5f, 260.0f }, 3.0f);
+		} else if (roundState_ == RoundState::RoundEnd) {
+			const char* winnerText = (roundEndWinnerSide_ == MatchRule::Winner::Player)
+				? "Player Wins the Round!"
+				: "Enemy Wins the Round!";
+			const float w = static_cast<float>(WindowsApplication::kClientWidth);
+			const float ww = tr->MeasureWidth(winnerText, 2.0f);
+			tr->DrawText(winnerText, { (w - ww) * 0.5f, 260.0f }, 2.0f);
+		}
+
 		tr->DrawText("A/D : Move   W/A(pad) : Jump   S/Down(pad) : Crouch", { 32.0f, 32.0f }, 0.8f);
 		tr->DrawText("Mouse/RStick : Aim   LClick/RT(pad) : Attack   R/RClick/Y(pad) : Throw", { 32.0f, 64.0f }, 0.8f);
 		tr->DrawText("ESC / (B) : Title", { 32.0f, 96.0f }, 0.8f);
@@ -1246,7 +1366,8 @@ void GameScene::Draw() {
 		tr->DrawText(hpLine, { 32.0f, 128.0f }, 0.8f);
 
 		char pointLine[128];
-		snprintf(pointLine, sizeof(pointLine), "Points  Player: %d   Enemy: %d", playerPoints_, enemyPoints_);
+		snprintf(pointLine, sizeof(pointLine), "Points  Player: %d   Enemy: %d",
+			matchRule_.GetPlayerPoints(), matchRule_.GetEnemyPoints());
 		tr->DrawText(pointLine, { 32.0f, 160.0f }, 0.8f);
 
 		// 敵 AI の状態と学習ティア(デバッグ表示。本番 UI は B)。
