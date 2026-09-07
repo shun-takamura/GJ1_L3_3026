@@ -33,6 +33,7 @@
 #include "Weapon/IceGun.h"
 #include "Weapon/FireGun.h"
 #include "Weapon/FireHazard.h"
+#include "Effect/EffectManager.h"
 #include "Log.h"
 
 #ifdef USE_IMGUI
@@ -502,6 +503,7 @@ void GameScene::UpdateStageGimmicks(float dt) {
 	};
 	for (const StageGrid::BombExplosion& ex : stage_->ConsumeBombExplosions()) {
 		AddDebugFlash(ex.center, ex.radius, Vector4{ 1.0f, 0.4f, 0.05f, 1.0f }, 0.5f);
+		EffectManager::GetInstance()->Play("Block_Exprosion", ex.center);
 		Log("爆弾ブロックが起爆\n");
 		applyBlast(*player_, ex);
 		applyBlast(*enemy_, ex);
@@ -686,6 +688,17 @@ void GameScene::Update() {
 		enemyInput.aimDirX, enemyInput.aimDirY, enemyInput.attackTriggered,
 		enemyInput.attackHeld, enemyInput.throwTriggered);
 
+	// ジャンプの踏み切り・着地の瞬間に、キャラの足元にエフェクトを出す。
+	auto playFootEffect = [](Character& c, const char* effectName) {
+		const Vector3 center = c.GetColliderCenter();
+		const Vector3 half = c.GetColliderHalfExtent();
+		EffectManager::GetInstance()->Play(effectName, { center.x, center.y - half.y, center.z });
+	};
+	for (Character* c : { player_.get(), enemy_.get() }) {
+		if (c->ConsumeJumpEffect()) playFootEffect(*c, "Jump");
+		if (c->ConsumeLandEffect()) playFootEffect(*c, "Jump");
+	}
+
 	// プレイヤーの行動を観測(ポイントを取られるたびに敵が強くなるための土台)。
 	playerModel_->Observe(*player_, *enemy_, stage_.get(), dt);
 
@@ -783,6 +796,12 @@ void GameScene::Update() {
 	UpdateDebugFlashes(dt);
 
 	//===================================
+	// エフェクト(EffectManager / GPUParticle)の更新。
+	// deltaTime は unscaled な実 delta を渡す(各コンポーネントの TimeGroup で内部スケールされる)。
+	//===================================
+	UpdateGlobalEffects(camera_.get(), dxCore_ ? dxCore_->GetDeltaTime() : dt);
+
+	//===================================
 	// タイトルへ戻る
 	//===================================
 	bool back = false;
@@ -821,6 +840,11 @@ void GameScene::ResolveAttack(Character& attacker, Character& defender, const ch
 	const int broke = stage_->DamageSphere(hitbox.center, hitbox.radius, hitbox.damage);
 	if (broke > 0) {
 		Log(std::string(attackerLabel) + " が壊れる床を破壊(" + std::to_string(broke) + ")\n");
+	}
+
+	// 殴り攻撃が敵かオブジェクト(壊れる床)に当たったら、その腕の位置にヒットエフェクトを出す。
+	if (hit || broke > 0) {
+		EffectManager::GetInstance()->Play("meller", hitbox.center);
 	}
 	// 攻撃が当たった爆弾ブロックは3秒信管が始まる(少しでも当たれば作動)。
 	stage_->ArmBombsInSphere(hitbox.center, hitbox.radius);
@@ -1188,6 +1212,12 @@ void GameScene::Draw() {
 		if (player_) player_->DrawWeaponModel(dxCore_);
 		if (enemy_) enemy_->DrawWeaponModel(dxCore_);
 	}
+
+	//===================================
+	// エフェクト(EffectManager)の描画。専用パイプラインを内部で貼るので順序制約は無いが、
+	// 世界の上に乗せたいのでキャラ・武器モデルの後に描く。
+	//===================================
+	DrawGlobalEffects();
 
 	//===================================
 	// デバッグ線の描画。
