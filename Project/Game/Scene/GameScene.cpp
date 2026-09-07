@@ -42,6 +42,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <string>
 #include <utility>
 #include <dinput.h>
 #include <Xinput.h>
@@ -227,6 +228,13 @@ void GameScene::Initialize() {
 	enemy_->Initialize(camera_.get(), "Enemy", enemySpawn_);
 	enemy_->SetStage(stage_.get());
 	enemy_->SetWeaponRenderContext(object3DManager_, dxCore_);
+
+	// 見た目の仮 Box をスキニング付きアニメモデルに差し替える(アセットが無ければ Box のまま)。
+	// プレイヤー=青 / 敵=赤。被弾中は赤・氷結中は水色に上書きされる。
+	player_->SetupAnimatedModel(object3DManager_, skinningComputeManager_, dxCore_, srvManager_,
+		{ 0.28f, 0.55f, 1.0f, 1.0f });
+	enemy_->SetupAnimatedModel(object3DManager_, skinningComputeManager_, dxCore_, srvManager_,
+		{ 1.0f, 0.32f, 0.28f, 1.0f });
 
 	// 敵 AI と学習モデル。GameScene は Think() の結果を Character へ渡すだけ。
 	enemyBrain_ = std::make_unique<EnemyBrain>();
@@ -1153,6 +1161,9 @@ void GameScene::Draw() {
 		for (auto& obj : flyingObjects_) {
 			obj->DrawModel(dxCore_);
 		}
+		// キャラ本体(スキニングモデル)。スキニング Compute の Dispatch → 描画 の順で呼ぶ。
+		if (player_) { player_->DispatchAnimatedSkinning(dxCore_); player_->DrawAnimatedModel(dxCore_); }
+		if (enemy_)  { enemy_->DispatchAnimatedSkinning(dxCore_);  enemy_->DrawAnimatedModel(dxCore_); }
 		if (player_) player_->DrawWeaponModel(dxCore_);
 		if (enemy_) enemy_->DrawWeaponModel(dxCore_);
 	}

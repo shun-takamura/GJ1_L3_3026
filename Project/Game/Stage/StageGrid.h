@@ -39,7 +39,7 @@ public:
 
 	static constexpr float kBombFuseSeconds = 3.0f;       // 被弾から起爆まで
 	static constexpr float kBombChainFuseSeconds = 0.12f; // 誘爆時の遅延（連鎖の見た目用）
-	static constexpr float kBombRadiusCells = 2.5f;       // 爆風半径（ブロック単位）
+	static constexpr float kBombRadiusCells = 3.0f;       // 爆風半径（ブロック単位）
 	static constexpr float kBombDamage = 50.0f;
 
 	/// <summary>爆弾ブロックが起爆したときに 1 件ずつ積まれる。GameScene が ConsumeBombExplosions で回収し、
