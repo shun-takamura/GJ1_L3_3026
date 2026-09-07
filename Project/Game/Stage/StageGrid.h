@@ -42,6 +42,11 @@ public:
 	static constexpr float kBombRadiusCells = 3.0f;       // 爆風半径（ブロック単位）
 	static constexpr float kBombDamage = 50.0f;
 
+	// ---- ベルトコンベアの見た目（UV スクロール。スキニングは使わない）----
+	// tread テクスチャ(Resources/Textures/Belt_Tread.dds)の UV を毎フレーム流して回転を表現する。
+	static constexpr float kBeltTilesU  = 1.0f;  // 1 セルあたりのテクスチャ繰り返し数（小さいほど模様が大きい）
+	static constexpr float kBeltUvSpeed = 0.9f;  // 1 秒あたりの UV スクロール量（見た目が逆なら符号を反転）
+
 	/// <summary>爆弾ブロックが起爆したときに 1 件ずつ積まれる。GameScene が ConsumeBombExplosions で回収し、
 	/// キャラへのダメージ／吹っ飛ばしを適用する（地形削り・誘爆は StageGrid 内で完結済み）。</summary>
 	struct BombExplosion {
@@ -179,6 +184,8 @@ private:
 
 	std::vector<Tile> tiles_;              // 見た目を持つセル（10/20 系）のみ
 	std::vector<Gimmick> gimmicks_;        // ギミック（30 番台）のみ
+
+	float beltUvOffset_ = 0.0f;            // ベルト tread の現在の UV スクロール位相（0..1 で wrap）
 	std::vector<BombExplosion> pendingBombExplosions_;
 
 	bool hasPlayerSpawn_ = false;
