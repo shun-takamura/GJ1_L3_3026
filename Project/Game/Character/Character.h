@@ -313,7 +313,7 @@ private:
 	// ---- 予備動作(windup) ----
 	// アニメの「実際に飛ぶ/投げる/当てる」フレームにゲーム内効果を合わせるための遅延。
 	// 値は generate_anims.py の各クリップのコミットフレームに対応させてある。
-	static constexpr float kJumpWindup  = 0.26f;  // しゃがみ込み → 踏み切り
+	static constexpr float kJumpWindup  = 0.15f;  // しゃがみ込み → 踏み切り
 	static constexpr float kThrowWindup = 0.17f;  // 振りかぶり → リリース
 	static constexpr float kMeleeWindup = 0.15f;  // 引き → 打撃
 
