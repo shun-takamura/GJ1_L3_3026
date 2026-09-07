@@ -333,6 +333,16 @@ int StageGrid::BeltDirUnderAabb(const Vector3& center, const Vector3& half, floa
 	return 0;
 }
 
+int StageGrid::BeltDirAtPoint(float worldX, float worldY) const {
+	int cx, cy;
+	WorldToCell({ worldX, worldY, 0.0f }, cx, cy);
+	switch (GimmickTypeAtCell(cx, cy)) {
+	case GimmickType::BeltLeft:  return -1;
+	case GimmickType::BeltRight: return 1;
+	default: return 0;
+	}
+}
+
 bool StageGrid::OverlapsSpike(const Vector3& center, const Vector3& half) const {
 	int cxLo, cyLo, cxHi, cyHi;
 	WorldToCell({ center.x - half.x, center.y + half.y, 0.0f }, cxLo, cyLo);

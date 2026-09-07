@@ -412,15 +412,36 @@ void GameScene::LoadStage(int index) {
 
 float GameScene::BeltShiftX(const Vector3& center, const Vector3& half, float dt) const {
 	// マージンぶん内側で見て、しっかり乗っていれば通常速度で搬送。
-	int dir = stage_->BeltDirUnderAabb(center, half, kBeltEdgeMargin);
-	float speed = kBeltSpeed;
-	if (dir == 0) {
-		// マージンは越えたが、まだ少しでも触れている → 強めに押し出して落とす
-		// （端で止まってバランスを取らせない）。
-		dir = stage_->BeltDirUnderAabb(center, half, -0.02f);
-		speed = kBeltSpeed * kBeltEdgeEjectMul;
+	const int solidDir = stage_->BeltDirUnderAabb(center, half, kBeltEdgeMargin);
+	if (solidDir != 0) {
+		return static_cast<float>(solidDir) * kBeltSpeed * dt;
 	}
-	return static_cast<float>(dir) * speed * dt;
+
+	// 端。左足／右足の直下を個別に見て、どちらの端からはみ出しているかで挙動を変える。
+	const float footY = center.y - half.y - 0.05f;
+	const int dirL = stage_->BeltDirAtPoint(center.x - half.x + 0.02f, footY);
+	const int dirR = stage_->BeltDirAtPoint(center.x + half.x - 0.02f, footY);
+	const int touch = (dirL != 0) ? dirL : dirR;  // 搬送方向（乗っている足が示す向き）
+	if (touch == 0) {
+		return 0.0f;  // どちらの足もベルト外
+	}
+
+	// touch>0（右搬送）: 上流側=左足(-X) / 下流側=右足(+X)。touch<0 で左右逆。
+	const bool upstreamSideFootOn   = (touch > 0) ? (dirL != 0) : (dirR != 0);
+	const bool downstreamSideFootOn = (touch > 0) ? (dirR != 0) : (dirL != 0);
+
+	if (upstreamSideFootOn && !downstreamSideFootOn) {
+		// 上流側の足だけ乗っている＝下流端からはみ出している
+		// → バランスを取らせず強めに押し出して落とす（従来の挙動）。
+		return static_cast<float>(touch) * kBeltSpeed * kBeltEdgeEjectMul * dt;
+	}
+	if (downstreamSideFootOn && !upstreamSideFootOn) {
+		// 下流側の足だけ乗っている＝上流端からはみ出している
+		// → もう掴まない（自分の移動＋重力で外れる。ここが今回の修正点）。
+		return 0.0f;
+	}
+	// 両足乗っている（端付近だが乗ってはいる）→ 通常搬送。
+	return static_cast<float>(touch) * kBeltSpeed * dt;
 }
 
 void GameScene::UpdateStageGimmicks(float dt) {

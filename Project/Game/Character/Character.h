@@ -281,6 +281,7 @@ private:
 	static constexpr float kMoveSpeed = 6.0f;             // 左右移動の速さ(units/秒)
 	static constexpr float kGravity = -26.0f;             // 重力加速度(下向きなので負の値)
 	static constexpr float kJumpSpeed = 11.0f;             // ジャンプ開始時の上向き初速
+	static constexpr float kCoyoteTime = 0.10f;           // 足場を離れた直後、空中でもジャンプできる猶予秒(コヨーテタイム)
 	static constexpr float kRestHeight = 0.9f;            // 接地時の position_.y (ボックスの中心の高さ。床が y=0 の前提)
 	static constexpr float kCapsuleRadius = 0.45f;        // 当たり判定カプセルの半径
 	static constexpr float kCapsuleHeight = 0.9f;         // 当たり判定カプセルの円柱部分の高さ(両端の半球は含まない)
@@ -419,6 +420,7 @@ private:
 	float burnDps_ = 0.0f;        // 継続ダメージの1秒あたりの量
 	float burnTimer_ = 0.0f;      // 0より大きい間だけ毎フレーム burnDps_*dt を ApplyDamage する
 	bool grounded_ = true;                        // 地面に接地しているか(falseの間だけジャンプ不可)
+	float coyoteTimer_ = 0.0f;                    // 0より大きい間は空中でもジャンプ可(接地で kCoyoteTime に補充、ジャンプ/壁蹴り/爆風で0)
 	bool isCrouching_ = false;                    // しゃがみ中か(直前の Update() の crouchHeld && grounded_)
 
 	// ---- 戦闘状態 ----

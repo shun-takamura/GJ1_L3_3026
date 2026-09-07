@@ -280,21 +280,33 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 		windupKind_ = WU_NONE;
 		verticalVelocity_ = kJumpSpeed;
 		grounded_ = false;
+		coyoteTimer_ = 0.0f;   // 踏み切り後は空中ジャンプさせない
 	}
 	// しゃがみ中はジャンプできない(しゃがみを解除してから)。
-	if (jumpTriggered && grounded_ && !isCrouching_ && windupKind_ == WU_NONE) {
-		windupKind_ = WU_JUMP;
-		windupTimer_ = kJumpWindup;   // 踏み切りは kJumpWindup 秒後(アニメのコミットに合わせる)
-	} else if (jumpTriggered && !grounded_ && !isCrouching_ && wallContactDir_ != 0) {
-		// ---- 壁ジャンプ ----
-		// 空中で壁に密着していればジャンプ入力で壁と反対方向へ蹴って跳ぶ。
-		// 壁方向へ入力し続けると、跳ねて離れた後に重力を受けながら壁へ近づき直し、
-		// 前回より上で再び密着して次の壁ジャンプができる(繰り返すと少しずつ登れる)。
-		verticalVelocity_ = kWallJumpUpSpeed;
-		wallJumpVelocityX_ = -static_cast<float>(wallContactDir_) * kWallJumpPushXSpeed;
-		wallJumpInputLockTimer_ = kWallJumpInputLockTime;
-		wallJumpLockDir_ = wallContactDir_; // 蹴った壁の方向への入力を少しの間打ち消す
-		wallJumpAnimTimer_ = 0.30f;         // 壁蹴りアニメを再生
+	if (jumpTriggered && !isCrouching_ && windupKind_ == WU_NONE) {
+		if (grounded_) {
+			// 接地ジャンプ: 予備動作(しゃがみ込み)を挟む。
+			windupKind_ = WU_JUMP;
+			windupTimer_ = kJumpWindup;   // 踏み切りは kJumpWindup 秒後(アニメのコミットに合わせる)
+			coyoteTimer_ = 0.0f;
+		} else if (coyoteTimer_ > 0.0f) {
+			// ---- コヨーテタイム ----
+			// 足場を離れた直後(kCoyoteTime 秒以内)は、空中でも予備動作なしで即ジャンプできる。
+			// ジャンプにディレイを入れたぶん、端の踏み外しで損しないための救済。
+			verticalVelocity_ = kJumpSpeed;
+			coyoteTimer_ = 0.0f;
+		} else if (wallContactDir_ != 0) {
+			// ---- 壁ジャンプ ----
+			// 空中で壁に密着していればジャンプ入力で壁と反対方向へ蹴って跳ぶ。
+			// 壁方向へ入力し続けると、跳ねて離れた後に重力を受けながら壁へ近づき直し、
+			// 前回より上で再び密着して次の壁ジャンプができる(繰り返すと少しずつ登れる)。
+			verticalVelocity_ = kWallJumpUpSpeed;
+			wallJumpVelocityX_ = -static_cast<float>(wallContactDir_) * kWallJumpPushXSpeed;
+			wallJumpInputLockTimer_ = kWallJumpInputLockTime;
+			wallJumpLockDir_ = wallContactDir_; // 蹴った壁の方向への入力を少しの間打ち消す
+			wallJumpAnimTimer_ = 0.30f;         // 壁蹴りアニメを再生
+			coyoteTimer_ = 0.0f;
+		}
 	}
 
 	// ---- 壁ずり落ち ----
@@ -344,6 +356,15 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 			verticalVelocity_ = 0.0f;
 			grounded_ = true;
 		}
+	}
+
+	// ---- コヨーテタイム ----
+	// 接地している間は満タンに補充し、空中では減らす。次フレームのジャンプ判定で
+	// 「grounded_ || coyoteTimer_ > 0」として使う(壁蹴り/爆風上昇時は上でその都度 0 にしている)。
+	if (grounded_) {
+		coyoteTimer_ = kCoyoteTime;
+	} else if (coyoteTimer_ > 0.0f) {
+		coyoteTimer_ -= dt;
 	}
 
 	// ---- 照準方向の更新 ----
@@ -781,6 +802,7 @@ void Character::ApplyBlastKnockback(float dirX, float dirY, float power) {
 	const float ny = dirY / len;
 	knockbackVelocityX_ = nx * power;   // ApplyKnockback と同じ上書き式
 	verticalVelocity_ = ny * power;
+	coyoteTimer_ = 0.0f;               // 爆風で吹き飛んだ直後にコヨーテジャンプさせない
 	if (ny > 0.0f) {
 		grounded_ = false; // 上向きに飛ぶなら空中扱いにして弧を描かせる
 	}
@@ -817,6 +839,7 @@ void Character::ResetForNewRound(const Vector3& spawnPos) {
 	wallContactDir_ = 0;
 	wallSliding_ = false;
 	grounded_ = true;
+	coyoteTimer_ = 0.0f;
 	isCrouching_ = false;
 	SyncColliderToPose(); // 立ち姿勢のカプセルへ戻す
 	hasPendingAttack_ = false;

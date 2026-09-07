@@ -109,6 +109,10 @@ public:
 	/// 足がわずかでも触れていれば拾いたいときは 0 か負の値）。</summary>
 	int BeltDirUnderAabb(const Vector3& center, const Vector3& half, float edgeMargin) const;
 
+	/// <summary>点 (worldX, worldY) の直下のセルがベルトなら流れる向き（-1=左 / +1=右）、
+	/// ベルトでなければ 0。端でどちらの足が乗っているかの判定に使う。</summary>
+	int BeltDirAtPoint(float worldX, float worldY) const;
+
 	/// <summary>中心 center・半サイズ half の AABB がトゲ（32）のセルと重なっているか（＝即死）。</summary>
 	bool OverlapsSpike(const Vector3& center, const Vector3& half) const;
 
