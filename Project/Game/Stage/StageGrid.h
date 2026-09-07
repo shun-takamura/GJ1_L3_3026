@@ -75,9 +75,12 @@ public:
 	/// 攻撃ヒットボックス（球）に重なる「壊れる床」へ damage を与え、
 	/// HP が 0 以下になったセルを破壊する。破壊したセル数を返す。
 	/// </summary>
-	int DamageSphere(const Vector3& center, float radius, float damage);
+	/// <param name="permanent">true なら、このダメージで壊れた床は ResetTerrain でも復活しない
+	/// （ステージギミックの爆弾ブロック用。通常の戦闘ダメージは false）。</param>
+	int DamageSphere(const Vector3& center, float radius, float damage, bool permanent = false);
 
-	/// <summary>破壊した床を全て元に戻し、HP を初期値へ。ラウンド開始時に呼ぶ。</summary>
+	/// <summary>破壊した床を元に戻し、HP を初期値へ。ラウンド開始時に呼ぶ。
+	/// ただし permanentlyDestroyed（爆弾ブロックで壊れた床）は復活させない。</summary>
 	void ResetTerrain();
 
 	//==============================
@@ -145,6 +148,7 @@ private:
 		int cy = 0;
 		int value = 0;        // 元の CSV 値（種別・テクスチャ選択に使う）
 		bool destroyed = false;
+		bool permanentlyDestroyed = false; // 爆弾ブロックの爆風で壊れた床。ResetTerrain でも復活しない
 		float hp = 0.0f;      // 壊れる床のみ意味を持つ
 		std::unique_ptr<PrimitiveInstance> visual;
 	};
