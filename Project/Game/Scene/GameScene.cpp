@@ -412,7 +412,8 @@ void GameScene::LoadStage(int index) {
 	pickups_.clear();
 	fireHazards_.clear();
 	debugFlashes_.clear();
-	weaponSpawnTimer_ = kWeaponSpawnInterval;
+	// ラウンド開始直後は短い方の間隔(kInitialWeaponSpawnDelay)で最初の1丁を湧かせる。
+	weaponSpawnTimer_ = kInitialWeaponSpawnDelay;
 
 	// 爆発・被弾などの再生中エフェクトも旧ステージの位置に残ったままにしない。
 	// EffectManager はアプリ全体で1つのシングルトン(GameApp::Initialize で Initialize/Finalize)
