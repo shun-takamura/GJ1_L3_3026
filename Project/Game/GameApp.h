@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <memory>
+#include <functional>
 
 #include "Framework.h"
 
@@ -9,6 +10,7 @@ class SceneFactory;
 class GPUParticleManager;
 class RenderTexture;
 class PostEffect;
+struct ID3D12GraphicsCommandList;
 
 /// <summary>
 /// ゲーム本体のアプリクラス。**これをコピーして自分のゲームを作る。**
@@ -42,6 +44,17 @@ public:
 	/// <summary>ImGui の getPostEffect フック配線用。未初期化なら nullptr。</summary>
 	static PostEffect* GetPostEffect() { return instance_ ? instance_->postEffect_.get() : nullptr; }
 
+	/// <summary>
+	/// 状態異常アウトライン用 ID パスの描画を差し込む。GameScene が Initialize で
+	/// 「プレイヤー/敵の DrawStatusOutlineIdPass を呼ぶ関数」を渡し、Finalize で nullptr を渡して解除する。
+	/// RenderSceneWithPostEffect が EndSceneRender 直後（フィルタ合成の前）に呼ぶ。
+	/// 実際に1体以上 idMask へ描いたら true を返す（false ならフィルタを OFF に保つ）。
+	/// </summary>
+	using StatusOutlineDrawer = std::function<bool(ID3D12GraphicsCommandList*)>;
+	static void SetStatusOutlineDrawer(StatusOutlineDrawer fn) {
+		if (instance_) instance_->statusOutlineDrawer_ = std::move(fn);
+	}
+
 private:
 	static GameApp* instance_;
 
@@ -52,6 +65,9 @@ private:
 
 	// シーンを一度 RenderTexture に描いてからフィルタ合成する（ポータルの Warp 歪み等）。
 	std::unique_ptr<PostEffect> postEffect_;
+
+	// 状態異常アウトライン（炎/氷）の ID パス描画。GameScene が配線する。
+	StatusOutlineDrawer statusOutlineDrawer_;
 
 	/// <summary>
 	/// シーンを postEffect_ の RT へ描き、歪みパスを挟んでフィルタ合成し、output へ出す。

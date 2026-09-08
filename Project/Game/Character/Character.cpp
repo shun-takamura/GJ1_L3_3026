@@ -488,7 +488,10 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 	}
 	if (burnTimer_ > 0.0f) {
 		burnTimer_ -= dt;
-		ApplyDamage(burnDps_ * dt); // 既存のApplyDamageをそのまま使う(ダメージフラッシュも自然に付く)
+		// 継続ダメージは HP を直接削る。ApplyDamage を使うと毎フレーム damageFlashTimer_ が
+		// セットされて本体が赤く点滅し続けるため、状態演出はアウトライン(MaskedOutline)に任せる。
+		hp_ -= burnDps_ * dt;
+		if (hp_ < 0.0f) hp_ = 0.0f;
 		if (burnTimer_ <= 0.0f) {
 			burnDps_ = 0.0f;
 		}
@@ -500,14 +503,11 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 	}
 
 	// ---- 見た目への反映 ----
-	// ダメージ直後は赤・氷結中は水色、それ以外は素の色(アニメモデル=チーム色 / Box=白)。
-	// 「当たったのに反応が無い/なぜ動きが重いのか分からない」を防ぐための最小限の演出。
-	// 燃焼(burn)は毎フレーム ApplyDamage が呼ばれ続けるので、赤が点滅し続ける形で表現される。
+	// ダメージ直後だけ赤、それ以外は素の色(アニメモデル=チーム色 / Box=白)。
+	// 炎/氷の状態異常は本体の色を変えず、MaskedOutline の点滅アウトライン(炎=赤/氷=青)で表す。
 	Vector4 tintColor = animChara_ ? teamColor_ : Vector4{ 1.0f, 1.0f, 1.0f, 1.0f };
 	if (damageFlashTimer_ > 0.0f) {
 		tintColor = { 1.0f, 0.2f, 0.2f, 1.0f };
-	} else if (slowTimer_ > 0.0f) {
-		tintColor = { 0.3f, 0.75f, 1.0f, 1.0f };
 	}
 
 	if (animChara_) {
@@ -568,6 +568,15 @@ void Character::DrawAnimatedModel(DirectXCore* dxCore) {
 	if (animChara_ && dxCore) {
 		animChara_->Draw(dxCore);
 	}
+}
+
+void Character::DrawStatusOutlineIdPass(DirectXCore* dxCore) {
+	if (!animChara_ || !dxCore) return;
+	const uint8_t id = GetStatusOutlineId();
+	if (id == 0) return;
+	// idMaskRT へ objectId_ を書き込む。MaskedOutline フィルタが 1=炎/2=氷 で色分けする。
+	animChara_->SetObjectId(id);
+	animChara_->DrawIdPass(dxCore);
 }
 
 void Character::UpdateAnimationState(float dt, float moveX) {

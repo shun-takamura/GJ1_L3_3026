@@ -208,6 +208,28 @@ public:
 	/// <summary>しゃがみ中か。AI の学習(しゃがみ回避の癖の計測)用に公開。</summary>
 	bool IsCrouching() const { return isCrouching_; }
 
+	/// <summary>燃焼(炎銃)状態か。</summary>
+	bool IsBurning() const { return burnTimer_ > 0.0f; }
+	/// <summary>氷結(氷銃)状態か。</summary>
+	bool IsFrozen() const { return slowTimer_ > 0.0f; }
+
+	/// <summary>
+	/// 状態異常アウトライン用の ID マスク値。0=無し / 1=炎(赤) / 2=氷(青)。
+	/// 両方成立していれば炎を優先する。
+	/// </summary>
+	uint8_t GetStatusOutlineId() const {
+		if (IsBurning()) return 1;
+		if (IsFrozen())  return 2;
+		return 0;
+	}
+
+	/// <summary>
+	/// 状態異常アウトライン用の ID パス。状態が非0のとき animChara_ に ID を書き込んで
+	/// idMaskRT へシルエットを描く。GameScene が PostEffect の IdPass 内で呼ぶ。
+	/// (アニメモデル未生成・状態無しなら何もしない)
+	/// </summary>
+	void DrawStatusOutlineIdPass(DirectXCore* dxCore);
+
 	/// <summary>今フレームの壁接触方向(-1=左に壁 / +1=右に壁 / 0=なし)。HUD・AI 用に公開。</summary>
 	int GetWallContactDir() const { return wallContactDir_; }
 	/// <summary>今フレーム壁ずり落ち(落下速度が緩む状態)が働いているか。HUD・AI 用に公開。</summary>

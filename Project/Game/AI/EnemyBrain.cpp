@@ -505,9 +505,17 @@ CharacterInput EnemyBrain::Think(const BrainContext& ctx) {
 		}
 	}
 
-	terrainBlockedTimer_ = terrainBlocked ? (terrainBlockedTimer_ + dt) : 0.0f;
+	// 詰まりタイマー: すぐ 0 に戻すと「壁へ寄る→少し下がる→また寄る」の往復で
+	// 毎サイクル・リセットされ、走りモーションのまま前後にプルプルし続ける。
+	// ブロック中は加算、非ブロック中は緩やかに減衰させて往復の記憶を残す。
+	if (terrainBlocked) {
+		terrainBlockedTimer_ = (std::min)(terrainBlockedTimer_ + dt, 4.0f);
+	} else {
+		terrainBlockedTimer_ = (std::max)(0.0f, terrainBlockedTimer_ - dt * 0.25f);
+	}
 
-	// 足止めされたら棒立ちしない。ただし探索は 0.8 秒まで（それ以上は諦めて待つ＝オシレーション防止）。
+	// 足止めされたら棒立ちしない。ただし後退での打開は累計 0.5 秒まで。
+	// それ以上は「そのルートでは無理」と諦めて動かず待つ（相手が寄る／武器が湧けば再開）。
 	if (terrainBlocked && ctx.stage) {
 		if (wantWeaponFetch && state_ != State::Retreat) {
 			TransitionTo(State::FetchWeapon); // 崖越しの相手を諦めて武器を取りに行く
@@ -515,7 +523,7 @@ CharacterInput EnemyBrain::Think(const BrainContext& ctx) {
 			&& state_ != State::FetchWeapon) {
 			TransitionTo(State::Attack);
 			reactionTimer_ = reactionDelay;
-		} else if (!p.hasLineOfSight && terrainBlockedTimer_ < 0.8f) {
+		} else if (!p.hasLineOfSight && terrainBlockedTimer_ < 0.5f) {
 			const AINav::MoveHazard back = AINav::Probe(*ctx.stage, pin.selfPos, -towardX,
 				kFeetHalfY, kLookAhead, kAiMaxJumpGap, kAiMaxJumpUp, kMaxSafeDrop);
 			const bool backHardStop = back.edgeAhead || back.wallAhead

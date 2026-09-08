@@ -58,8 +58,13 @@ namespace AINav {
 
 		if (legBlocked) {
 			hz.wallAhead = true;
-			// 壁の上端が「頭 + maxJumpUp」より高ければ、ジャンプしても越えられない。
-			hz.wallTall = SolidBand(stage, x0, pos.y + feetHalfY + maxJumpUp, pos.z, feetHalfY * 0.5f);
+			// ジャンプで上に立てるのは「足元 + maxJumpUp」まで。そこより上へ壁が続いていれば
+			// 跳んでも乗れない＝越えられない。
+			//   band = [feetY + maxJumpUp, feetY + maxJumpUp + feetHalfY]
+			// （旧実装は pos.y + feetHalfY + maxJumpUp を見ており、2 セル以上の壁でも
+			//   wallTall=false になって永久ジャンプしていた）。
+			hz.wallTall = SolidBand(stage, x0,
+				feetY + maxJumpUp + feetHalfY * 0.5f, pos.z, feetHalfY * 0.5f);
 			hz.breakableAhead = wallIsBreakable();
 			return hz;
 		}
