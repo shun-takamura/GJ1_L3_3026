@@ -24,6 +24,11 @@ public:
 private:
 	std::unique_ptr<Camera> camera_;
 
+	// タイトル画面の背景。奥に置いた大きな Plane にテクスチャを貼って表現する
+	// (SpriteInstance は深度を無視するスクリーン座標描画なので、3Dの飾りキューブより
+	// 手前に出てしまう。3D の一部として奥へ置けば通常の深度テストで正しく隠れる)。
+	std::unique_ptr<PrimitiveInstance> background_;
+
 	// タイトルの飾り。ゆっくり回るキューブ
 	std::unique_ptr<PrimitiveInstance> logo_;
 	float spin_ = 0.0f;

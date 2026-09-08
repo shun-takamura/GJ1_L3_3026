@@ -111,6 +111,11 @@ private:
 
 	std::unique_ptr<Camera> camera_;
 
+	// アリーナの背景。カメラの奥に大きな Plane を置いてテクスチャを貼るだけで、
+	// 当たり判定には関与しない(SpriteInstance だと深度を無視して最前面に出てしまうため
+	// 3D の一部として奥へ置く。TitleScene::background_ と同じ理由)。
+	std::unique_ptr<PrimitiveInstance> background_;
+
 	// 操作キャラ / 敵キャラ。敵の行動は enemyBrain_ が CharacterInput として決める
 	// (Character 側はプレイヤーと敵を区別しない。Character.h の設計コメント参照)。
 	std::unique_ptr<Character> player_;
@@ -179,8 +184,12 @@ private:
 	void UpdateRoundEnd(float dt);
 
 	// 秒間隔でステージにランダムな武器を1つ湧かせるまでのカウントダウン。
-	static constexpr float kWeaponSpawnInterval = 8.0f;
-	float weaponSpawnTimer_ = kWeaponSpawnInterval;
+	static constexpr float kWeaponSpawnInterval = 7.0f;
+	// ラウンド開始直後(LoadStage直後)だけは、この短い方の秒数を使う。
+	// kWeaponSpawnInterval をそのまま初回にも使うと、戦闘開始からしばらく
+	// 誰も武器を拾えない間延びした時間ができてしまうため分けている。
+	static constexpr float kInitialWeaponSpawnDelay = 3.0f;
+	float weaponSpawnTimer_ = kInitialWeaponSpawnDelay;
 
 	// 飛んでいる銃弾・投げ捨てた武器。どちらも ArcingProjectile で表現する(クラス冒頭コメント参照)。
 	std::vector<std::unique_ptr<ArcingProjectile>> flyingObjects_;

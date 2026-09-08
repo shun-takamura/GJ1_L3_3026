@@ -35,6 +35,30 @@ void TitleScene::Initialize() {
 	lm->SetDirectionalLightIntensity(1.2f);
 
 	//===================================
+	// 背景。カメラの正面方向へ一定距離だけ進めた位置に Plane を置いてテクスチャを貼る。
+	// カメラと同じ向きに回転させることで、ピッチが付いていても画面いっぱいの
+	// スクリーンに正対した板になる(サイズは distance でのカメラ視錐台の大きさに
+	// 合わせた概算値。fovY≈0.45rad, 16:9 のときの計算値に少し余裕を持たせている)。
+	//===================================
+	{
+		constexpr float kBgDistance = 15.0f;
+		const Vector3 camPos = camera_->GetTranslate();
+		const Vector3 fwd = camera_->GetForward();
+		const Vector3 bgPos{
+			camPos.x + fwd.x * kBgDistance,
+			camPos.y + fwd.y * kBgDistance,
+			camPos.z + fwd.z * kBgDistance };
+
+		background_ = std::make_unique<PrimitiveInstance>();
+		background_->Initialize(PrimitiveInstance::PrimitiveType::Plane, "TitleBackground");
+		background_->SetCamera(camera_.get());
+		background_->SetTranslate(bgPos);
+		background_->SetRotate(camera_->GetRotate());
+		background_->SetScale({ 14.0f, 8.0f, 1.0f });
+		background_->SetTexture("Resources/Textures/Title.dds");
+	}
+
+	//===================================
 	// 飾りのキューブ
 	//===================================
 	logo_ = std::make_unique<PrimitiveInstance>();
@@ -45,6 +69,7 @@ void TitleScene::Initialize() {
 
 void TitleScene::Finalize() {
 	logo_.reset();
+	background_.reset();
 	camera_.reset();
 }
 
@@ -52,6 +77,10 @@ void TitleScene::Update() {
 	UpdateDebugCameraIfActive();
 	if (!GetUseDebugCamera()) {
 		camera_->Update();
+	}
+
+	if (background_) {
+		background_->Update();
 	}
 
 	// UI グループの時間で回す。ポーズしても回り続けてほしいので World ではない
@@ -81,6 +110,10 @@ void TitleScene::Update() {
 }
 
 void TitleScene::Draw() {
+	if (background_) {
+		background_->Draw();
+	}
+
 	if (logo_) {
 		logo_->Draw();
 	}

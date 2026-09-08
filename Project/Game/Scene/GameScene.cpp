@@ -181,7 +181,7 @@ void GameScene::Initialize() {
 	// 32x18 セルのステージ全体を横から見る固定視点。値は仮置きで、
 	// デバッグカメラ(Scene 基底機能)で追い込んでから確定する。
 	camera_ = std::make_unique<Camera>();
-	camera_->SetTranslate({ 0.0f, 8.0f, -38.0f });
+	camera_->SetTranslate({ 0.0f, 9.0f, -43.0f });
 	camera_->SetRotate({ 0.0f, 0.0f, 0.0f });
 	camera_->Update();
 
@@ -196,6 +196,29 @@ void GameScene::Initialize() {
 	lm->SetDirectionalLightDirection({ -0.4f, -1.0f, 0.3f });
 	lm->SetDirectionalLightColor({ 1.0f, 1.0f, 1.0f, 1.0f });
 	lm->SetDirectionalLightIntensity(1.0f);
+
+	//===================================
+	// 背景(アリーナの一番奥)。カメラの正面方向へ一定距離だけ進めた位置に Plane を
+	// 置いてテクスチャを貼る。サイズは distance でのカメラ視錐台の大きさに合わせた
+	// 概算値(TitleScene::Initialize と同じ考え方。fovY≈0.45rad, 16:9 の計算値+余裕)。
+	//===================================
+	{
+		constexpr float kBgDistance = 58.0f;
+		const Vector3 camPos = camera_->GetTranslate();
+		const Vector3 fwd = camera_->GetForward();
+		const Vector3 bgPos{
+			camPos.x + fwd.x * kBgDistance,
+			camPos.y + fwd.y * kBgDistance,
+			camPos.z + fwd.z * kBgDistance };
+
+		background_ = std::make_unique<PrimitiveInstance>();
+		background_->Initialize(PrimitiveInstance::PrimitiveType::Plane, "GameBackground");
+		background_->SetCamera(camera_.get());
+		background_->SetTranslate(bgPos);
+		background_->SetRotate(camera_->GetRotate());
+		background_->SetScale({ 52.0f, 29.0f, 1.0f });
+		background_->SetTexture("Resources/Textures/BackGround.dds");
+	}
 
 	//===================================
 	// ステージ(CSV マップチップ)
@@ -394,6 +417,7 @@ void GameScene::Finalize() {
 	enemy_.reset();
 	player_.reset();
 	stage_.reset();
+	background_.reset();
 	camera_.reset();
 }
 
@@ -429,7 +453,8 @@ void GameScene::LoadStage(int index) {
 	pickups_.clear();
 	fireHazards_.clear();
 	debugFlashes_.clear();
-	weaponSpawnTimer_ = kWeaponSpawnInterval;
+	// ラウンド開始直後は短い方の間隔(kInitialWeaponSpawnDelay)で最初の1丁を湧かせる。
+	weaponSpawnTimer_ = kInitialWeaponSpawnDelay;
 
 	// 爆発・被弾などの再生中エフェクトも旧ステージの位置に残ったままにしない。
 	// EffectManager はアプリ全体で1つのシングルトン(GameApp::Initialize で Initialize/Finalize)
@@ -659,6 +684,10 @@ void GameScene::Update() {
 	UpdateDebugCameraIfActive();
 	if (!GetUseDebugCamera()) {
 		camera_->Update();
+	}
+
+	if (background_) {
+		background_->Update();
 	}
 
 	// ゲームロジックは Player グループの時間で進める。
@@ -1362,6 +1391,10 @@ void GameScene::UpdateWeaponSpawner(float dt) {
 }
 
 void GameScene::Draw() {
+	if (background_) {
+		background_->Draw();
+	}
+
 	//===================================
 	// プリミティブ相当(ステージ・キャラ本体・弾)。
 	// 各 Draw() が内部で PrimitivePipeline を貼り直すので順序の制約は無い。
@@ -1414,7 +1447,6 @@ void GameScene::Draw() {
 	// DebugDraw::* は線をキューに積むだけなので、
 	// 最後に LineRenderer::Draw() を呼ばないと何も出ない(エンジンの定番の落とし穴)。
 	//===================================
-	DebugDraw::Grid({ 0.0f, 0.01f, 0.0f }, 20.0f, 1.0f, { 0.4f, 0.4f, 0.5f, 1.0f });
 	DrawDebugAids();
 
 	auto* lr = LineRenderer::GetInstance();
