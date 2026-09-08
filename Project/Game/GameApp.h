@@ -8,6 +8,7 @@ class ISceneRunner;
 class SceneFactory;
 class GPUParticleManager;
 class RenderTexture;
+class PostEffect;
 
 /// <summary>
 /// ゲーム本体のアプリクラス。**これをコピーして自分のゲームを作る。**
@@ -27,7 +28,7 @@ public:
 	~GameApp() override;
 
 	/// <summary>ウィンドウのタイトルバーに出す文字列。自分のゲーム名に変える。</summary>
-	const wchar_t* GetWindowTitle() const override { return L"My Game"; }
+	const wchar_t* GetWindowTitle() const override { return L"3026_BREAKP01NT"; }
 
 	void Initialize() override;
 	void Finalize() override;
@@ -38,6 +39,9 @@ public:
 
 	static GameApp* GetInstance() { return instance_; }
 
+	/// <summary>ImGui の getPostEffect フック配線用。未初期化なら nullptr。</summary>
+	static PostEffect* GetPostEffect() { return instance_ ? instance_->postEffect_.get() : nullptr; }
+
 private:
 	static GameApp* instance_;
 
@@ -45,6 +49,15 @@ private:
 
 	// エフェクト系（EffectManager が参照するので Framework より長生きさせる）
 	std::unique_ptr<GPUParticleManager> gpuParticleManager_;
+
+	// シーンを一度 RenderTexture に描いてからフィルタ合成する（ポータルの Warp 歪み等）。
+	std::unique_ptr<PostEffect> postEffect_;
+
+	/// <summary>
+	/// シーンを postEffect_ の RT へ描き、歪みパスを挟んでフィルタ合成し、output へ出す。
+	/// output=nullptr でスワップチェーン（この場合は関数内で dxCore_->BeginDraw する）。
+	/// </summary>
+	void RenderSceneWithPostEffect(RenderTexture* output);
 
 #ifdef _DEBUG
 	// Debug ビルド専用: ImGui の Scene ビューポートに表示する描画先

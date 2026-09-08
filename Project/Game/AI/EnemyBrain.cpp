@@ -23,8 +23,8 @@ void EnemyBrain::Initialize(bool turretMode) {
 	ResetForNewRound();
 }
 
-void EnemyBrain::NotifyDeath(bool wasOutOfBounds) {
-	if (wasOutOfBounds) {
+void EnemyBrain::NotifyDeath(bool wasOutOfBounds, bool wasHazard) {
+	if (wasOutOfBounds || wasHazard) {
 		selfFallCount_ = (std::min)(selfFallCount_ + 1, kMaxFallCaution);
 	}
 }
@@ -411,8 +411,9 @@ CharacterInput EnemyBrain::Think(const BrainContext& ctx) {
 		auto hazardSide = [&](float dir) -> bool {
 			const AINav::MoveHazard h = AINav::Probe(*ctx.stage, pin.selfPos, dir,
 				kFeetHalfY, edgeCaution, jumpGap, kAiMaxJumpUp, kMaxSafeDrop);
-			// 「飛び降りて着地できる段差(dropAhead)」は崖扱いしない。
-			return h.edgeAhead || (h.pitAhead && !h.jumpClears && !h.dropAhead);
+			// 「飛び降りて着地できる段差(dropAhead)」は崖扱いしない。トゲは跳び越せる時以外は避ける。
+			return h.edgeAhead || (h.spikeAhead && !h.jumpClears)
+				|| (h.pitAhead && !h.jumpClears && !h.dropAhead);
 		};
 		const bool hazL = hazardSide(-1.0f);
 		const bool hazR = hazardSide(1.0f);
@@ -445,6 +446,8 @@ CharacterInput EnemyBrain::Think(const BrainContext& ctx) {
 
 	// ================= ナビ: 穴・壁・場外・崖・低い隙間の先読み =================
 	bool terrainBlocked = false;
+	bool wantBreakWall = false;   // 進路を塞ぐ「壊れる壁」を攻撃で崩したい
+	float breakWallDir = 0.0f;    // その壁の方向（±1）
 	if (ctx.stage && desiredMoveX != 0.0f) {
 		// 武器へ向かっているときは、少し無理めの穴でも跳ぶ（pickup の下には必ず床がある）。
 		const bool fetching = (state_ == State::FetchWeapon);
@@ -457,6 +460,9 @@ CharacterInput EnemyBrain::Think(const BrainContext& ctx) {
 		const bool fetchLeap = fetching && ctx.nearestPickup && hz.pitAhead && !hz.wallTall
 			&& pickupDist < kAiMaxJumpGap * 1.8f;
 
+		// トゲは即死。無茶(recklessDive / fetchLeap)を許さず、クリーンに跳び越せる時だけ通す。
+		const bool spikeBlock = hz.spikeAhead && !hz.jumpClears;
+
 		// 前方の穴に着地は無いが下段の床がある(dropAhead)場合、
 		// 「下段のターゲット／武器へ向かっている」ときだけ歩いて飛び降りることを許す。
 		const bool wantDescend =
@@ -467,8 +473,21 @@ CharacterInput EnemyBrain::Think(const BrainContext& ctx) {
 		const bool canDrop = hz.dropAhead && wantDescend && selfFallCount_ < 2;
 
 		const bool hardStop = hz.edgeAhead
+			|| spikeBlock
 			|| (hz.pitAhead && !hz.jumpClears && !recklessDive && !canDrop && !fetchLeap)
 			|| (hz.wallAhead && hz.wallTall); // 越えられない壁は押し込まない
+
+		// トゲ／穴を跳び越す踏み切り条件（トゲは jumpClears 必須、穴は無茶も可）。
+		const bool wantJumpGap =
+			((hz.pitAhead || hz.spikeAhead) && hz.jumpClears)
+			|| (hz.pitAhead && (recklessDive || fetchLeap));
+
+		// 迂回もジャンプもできない壁が「壊れるブロック」なら、崩して進む候補にする
+		// （Retreat 中は対象外。逃げ道の壁を掘るのは不自然）。
+		if (hz.wallAhead && hz.wallTall && hz.breakableAhead && state_ != State::Retreat) {
+			wantBreakWall = true;
+			breakWallDir = (desiredMoveX >= 0.0f) ? 1.0f : -1.0f;
+		}
 
 		if (hz.crouchAhead) {
 			out.crouchHeld = true;
@@ -477,7 +496,7 @@ CharacterInput EnemyBrain::Think(const BrainContext& ctx) {
 			terrainBlocked = true;
 		} else if (canDrop) {
 			// desiredMoveX はそのまま。端まで歩いてそのまま落ちる（ジャンプしない）。
-		} else if (hz.pitAhead && (hz.jumpClears || recklessDive || fetchLeap) && jumpCooldown_ <= 0.0f) {
+		} else if (wantJumpGap && jumpCooldown_ <= 0.0f) {
 			out.jumpTriggered = true;
 			jumpCooldown_ = kJumpInterval;
 		} else if (hz.wallAhead && !hz.wallTall && jumpCooldown_ <= 0.0f && !p.targetBelow) {
@@ -500,6 +519,7 @@ CharacterInput EnemyBrain::Think(const BrainContext& ctx) {
 			const AINav::MoveHazard back = AINav::Probe(*ctx.stage, pin.selfPos, -towardX,
 				kFeetHalfY, kLookAhead, kAiMaxJumpGap, kAiMaxJumpUp, kMaxSafeDrop);
 			const bool backHardStop = back.edgeAhead || back.wallAhead
+				|| (back.spikeAhead && !back.jumpClears)
 				|| (back.pitAhead && !back.jumpClears && !back.dropAhead);
 			if (!backHardStop) {
 				desiredMoveX = -towardX * 0.7f;
@@ -534,7 +554,8 @@ CharacterInput EnemyBrain::Think(const BrainContext& ctx) {
 			if (ctx.stage) {
 				const AINav::MoveHazard h = AINav::Probe(*ctx.stage, pin.selfPos, stepDir,
 					kFeetHalfY, kLookAhead, jumpGap, kAiMaxJumpUp, kMaxSafeDrop);
-				if (!h.edgeAhead && !(h.pitAhead && !h.jumpClears && !h.dropAhead)) {
+				if (!h.edgeAhead && !(h.spikeAhead && !h.jumpClears)
+					&& !(h.pitAhead && !h.jumpClears && !h.dropAhead)) {
 					desiredMoveX = stepDir;
 				}
 			}
@@ -613,13 +634,64 @@ CharacterInput EnemyBrain::Think(const BrainContext& ctx) {
 		if (ctx.stage) {
 			const AINav::MoveHazard h = AINav::Probe(*ctx.stage, pin.selfPos, sd,
 				kFeetHalfY, kLookAhead, jumpGap, kAiMaxJumpUp, kMaxSafeDrop);
-			if (h.edgeAhead || (h.pitAhead && !h.jumpClears && !h.dropAhead) || h.wallAhead) {
-				strafe = 0.0f; // 崖・壁側へは揺れない
+			if (h.edgeAhead || (h.spikeAhead && !h.jumpClears)
+				|| (h.pitAhead && !h.jumpClears && !h.dropAhead) || h.wallAhead) {
+				strafe = 0.0f; // 崖・トゲ・壁側へは揺れない
 			}
 		}
 		out.moveX = strafe;
 	} else {
 		strafePhase_ = 0.0f;
+	}
+
+	// ================= 壊せる壁を掘って進む =================
+	// 迂回・ジャンプできない壁が「壊れるブロック」なら、正面に狙いを向けて攻撃で崩す。
+	// 弾切れ（撃てない）と素手で射程外のときは崩せないので何もしない。
+	// 壁へ押し付けて撃つ／殴るので、素手でも銃でも正面の壁には届く。
+	if (wantBreakWall && !pin.targetIsDead && !outOfAmmo) {
+		float ax = breakWallDir;
+		float ay = -0.12f; // 足元寄りのブロックも巻き込むよう気持ち下向き
+		const float l = std::sqrt(ax * ax + ay * ay);
+		ax /= l; ay /= l;
+		out.aimDirX = ax;
+		out.aimDirY = ay;
+		out.moveX = breakWallDir * 0.5f; // 壁へ押し付け続ける（崩れた瞬間に前進）
+		out.attackHeld = true;
+		if (attackRefireTimer_ <= 0.0f) {
+			out.attackTriggered = true;
+			attackRefireTimer_ = kAttackRefire;
+		}
+		terrainBlocked = true; // HUD 表示用（末尾で dbg_ に反映）
+	}
+
+	// ================= ベルトコンベア対策 =================
+	// 足元のベルトが崖／トゲの方向へ運んでいるなら、流れに逆らって踏みとどまる
+	// （逆方向も危ないならジャンプで抜ける）。放置すると崖ぎわの hardStop が効く前に
+	// ベルトで押し出されて落ちる。移動決定の最後に上書きする。
+	if (ctx.stage && ctx.self->IsGrounded()) {
+		const int belt = ctx.stage->BeltDirUnderAabb(
+			ctx.self->GetColliderCenter(), ctx.self->GetColliderHalfExtent(), 0.0f);
+		if (belt != 0) {
+			const float bd = static_cast<float>(belt);
+			const AINav::MoveHazard along = AINav::Probe(*ctx.stage, pin.selfPos, bd,
+				kFeetHalfY, edgeCaution, jumpGap, kAiMaxJumpUp, kMaxSafeDrop);
+			const bool carriedIntoDanger = along.edgeAhead
+				|| (along.spikeAhead && !along.jumpClears)
+				|| (along.pitAhead && !along.jumpClears && !along.dropAhead);
+			if (carriedIntoDanger) {
+				const AINav::MoveHazard against = AINav::Probe(*ctx.stage, pin.selfPos, -bd,
+					kFeetHalfY, kLookAhead, jumpGap, kAiMaxJumpUp, kMaxSafeDrop);
+				const bool againstSafe = !against.edgeAhead && !against.spikeAhead
+					&& !(against.pitAhead && !against.jumpClears && !against.dropAhead)
+					&& !(against.wallAhead && against.wallTall);
+				if (againstSafe) {
+					out.moveX = -bd;                    // 流れに逆らって歩く
+				} else if (jumpCooldown_ <= 0.0f) {
+					out.jumpTriggered = true;           // どちらも無理 → 跳んで脱出
+					jumpCooldown_ = kJumpInterval;
+				}
+			}
+		}
 	}
 
 	// 武器投げ（成立フレームだけ）。投げると素手に戻り、次フレームから pickup を拾いに行く。
@@ -652,7 +724,7 @@ CharacterInput EnemyBrain::Think(const BrainContext& ctx) {
 			out.moveX = (ctx.nearestPickup->x >= pin.selfPos.x) ? 1.0f : -1.0f;
 			const AINav::MoveHazard h = AINav::Probe(*ctx.stage, pin.selfPos, out.moveX,
 				kFeetHalfY, kLookAhead, kAiMaxJumpGap * 1.5f, kAiMaxJumpUp, kMaxSafeDrop);
-			if (h.edgeAhead) {
+			if (h.edgeAhead || (h.spikeAhead && !h.jumpClears)) {
 				out.moveX = 0.0f;
 			} else {
 				if (h.pitAhead && jumpCooldown_ <= 0.0f) {
@@ -669,7 +741,8 @@ CharacterInput EnemyBrain::Think(const BrainContext& ctx) {
 			const float dir = towardX; // 相手の方向
 			const AINav::MoveHazard h = AINav::Probe(*ctx.stage, pin.selfPos, dir,
 				kFeetHalfY, 1.4f, 0.1f, kAiMaxJumpUp, kMaxSafeDrop);
-			const bool atEdge = h.edgeAhead || h.wallAhead || (h.pitAhead && !h.dropAhead);
+			const bool atEdge = h.edgeAhead || h.wallAhead || h.spikeAhead
+				|| (h.pitAhead && !h.dropAhead);
 			out.moveX = atEdge ? 0.0f : dir * 0.7f; // 端でなければもう少し詰める、端なら止まって待つ
 		}
 	}

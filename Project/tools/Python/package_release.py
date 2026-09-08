@@ -138,7 +138,7 @@ def main() -> int:
         print(f"[PACKAGE] {zip_path}")
         print(f"  timestamp: {timestamp}")
         print(f"  release:   {len(release_files)} 件")
-        print(f"  fs:        {len(fs_files)} 件 (Resources/{{Shaders,Json,Sounds}} 配下)")
+        print(f"  fs:        {len(fs_files)} 件 (Resources/{{CompiledShaders,Json,Sounds}} 配下)")
         print(f"  pack:      {pack_file.name} ({pack_size_mb:.2f} MB)")
 
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:

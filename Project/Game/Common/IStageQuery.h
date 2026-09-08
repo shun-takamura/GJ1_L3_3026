@@ -57,4 +57,25 @@ public:
 	/// ※ IStageQuery 正式版の凍結対象に含める（B の危険床表示等でも使える想定）。
 	/// </summary>
 	virtual bool IsPrecariousBreakableFloor(const Vector3& pos) const = 0;
+
+	//====================
+	// ステージギミックのうち、AI のナビ判断に要るもの
+	// （地形当たり判定には出てこない即死トラップ・搬送）。
+	// ※ IStageQuery 正式版の凍結対象に含める。実装は StageGrid 側に既存。
+	//====================
+
+	/// <summary>中心 center・半サイズ half の AABB がトゲ（即死ギミック）と重なっているか。</summary>
+	virtual bool OverlapsSpike(const Vector3& center, const Vector3& half) const = 0;
+
+	/// <summary>
+	/// worldPos のセルが「壊れる床（20 番台）」で、まだ壊れていないか。
+	/// AI が「進路を塞ぐブロックを撃って崩せるか」を判断するのに使う。
+	/// </summary>
+	virtual bool IsBreakableAt(const Vector3& worldPos) const = 0;
+
+	/// <summary>
+	/// AABB の足元（底面の 1 セル下）の横帯にベルトコンベアが有れば流れる向き
+	/// （-1=左 / +1=右）、無ければ 0。edgeMargin だけ左右を内側へ詰めて走査する。
+	/// </summary>
+	virtual int BeltDirUnderAabb(const Vector3& center, const Vector3& half, float edgeMargin) const = 0;
 };

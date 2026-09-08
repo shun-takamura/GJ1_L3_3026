@@ -1,10 +1,8 @@
 #include "Stage/StageCatalog.h"
 
 #include <algorithm>
-#include <cctype>
-#include <filesystem>
-#include <system_error>
 
+#include "AssetLocator.h"
 #include "Log.h"
 #include "RandomGenerator.h"
 
@@ -12,29 +10,25 @@ namespace {
 	const std::string kEmpty;
 	// エンジンはカレントディレクトリ（= Project/）からの相対で Resources/ を読む。
 	constexpr const char* kStagesDir = "Resources/Stages";
+
+	// "Resources/Stages/Starge_01.csv" -> "Starge_01"
+	std::string StemOf(const std::string& path) {
+		size_t slash = path.find_last_of("/\\");
+		std::string file = (slash == std::string::npos) ? path : path.substr(slash + 1);
+		size_t dot = file.find_last_of('.');
+		return (dot == std::string::npos) ? file : file.substr(0, dot);
+	}
 }
 
 void StageCatalog::Scan() {
 	entries_.clear();
 
-	std::error_code ec;
-	const std::filesystem::path dir(kStagesDir);
-	if (std::filesystem::is_directory(dir, ec)) {
-		for (const auto& de : std::filesystem::directory_iterator(dir, ec)) {
-			if (ec) break;
-			if (!de.is_regular_file()) continue;
-			const std::filesystem::path& p = de.path();
-			std::string ext = p.extension().string();
-			std::transform(ext.begin(), ext.end(), ext.begin(),
-				[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-			if (ext != ".csv") continue;
-
-			Entry e;
-			e.name = p.stem().string();
-			// パス区切りは '/' に正規化（エンジンの ifstream はどちらでも開けるが表示の一貫性のため）。
-			e.path = std::string(kStagesDir) + "/" + p.filename().string();
-			entries_.push_back(std::move(e));
-		}
+	// FS モードでもディスクを走査、pack モードでは pack 目次から拾う（AssetLocator が両対応）。
+	for (const std::string& p : AssetLocator::GetInstance()->ListByExtension(".csv", kStagesDir)) {
+		Entry e;
+		e.name = StemOf(p);
+		e.path = p;
+		entries_.push_back(std::move(e));
 	}
 
 	std::sort(entries_.begin(), entries_.end(),

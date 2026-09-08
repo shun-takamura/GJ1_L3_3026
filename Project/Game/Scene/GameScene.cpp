@@ -360,6 +360,8 @@ void GameScene::Initialize() {
 	}
 #endif
 
+	RefreshPortalEffects(); // 各ポータル位置に Warp エフェクトを常駐再生
+
 	// 最初のラウンドも、得点によるステージ切替と同じく3秒カウントダウンを挟んでから始める。
 	StartRoundCountdown();
 }
@@ -368,6 +370,10 @@ void GameScene::Finalize() {
 	if (s_activeForDebug_ == this) {
 		s_activeForDebug_ = nullptr;
 	}
+	for (EffectHandle h : portalEffectHandles_) {
+		EffectManager::GetInstance()->Stop(h);
+	}
+	portalEffectHandles_.clear();
 	// 依存関係はないが、生成順と逆順に破棄する(可読性のための慣習)。
 	pickups_.clear();
 	flyingObjects_.clear();
@@ -422,8 +428,29 @@ void GameScene::LoadStage(int index) {
 	playerInPortal_ = false;
 	enemyInPortal_ = false;
 
+	RefreshPortalEffects();
+
 	// 新しいステージでの戦闘は、旧ステージでの決着直後にいきなり始めない。3秒待たせる。
 	StartRoundCountdown();
+}
+
+void GameScene::RefreshPortalEffects() {
+	// 前のステージぶんの Warp エフェクトを止める。
+	for (EffectHandle h : portalEffectHandles_) {
+		EffectManager::GetInstance()->Stop(h);
+	}
+	portalEffectHandles_.clear();
+
+	if (!stage_) {
+		return;
+	}
+	// 各ポータル位置に loop の Warp エフェクトを常駐再生する。
+	for (const Vector3& p : stage_->GetPortalWorldPositions()) {
+		const EffectHandle h = EffectManager::GetInstance()->Play("Warp", p);
+		if (h != kInvalidEffectHandle) {
+			portalEffectHandles_.push_back(h);
+		}
+	}
 }
 
 void GameScene::StartRoundCountdown() {
@@ -538,6 +565,10 @@ void GameScene::UpdateStageGimmicks(float dt) {
 		return;
 	}
 
+	// 敵がこのフレームにトゲで即死したか（AI の「危険地形への慎重さ」学習に渡す）。
+	// KO 判定(CheckKnockoutAndReset の後)で消費する。
+	enemyDeathBySpike_ = false;
+
 	auto applyBelt = [&](Character& c) {
 		if (!c.IsGrounded()) {
 			return;
@@ -549,10 +580,14 @@ void GameScene::UpdateStageGimmicks(float dt) {
 		}
 	};
 
-	auto applySpike = [&](Character& c) {
-		// プレイヤーの当たり判定 AABB 全体で重なりを見る（しゃがみ中は高さが縮む）。
-		if (stage_->OverlapsSpike(c.GetColliderCenter(), c.GetColliderHalfExtent())) {
+	auto applySpike = [&](Character& c, bool* spikeDeathOut) {
+		// 当たり判定 AABB 全体で重なりを見る（しゃがみ中は高さが縮む）。
+		if (!c.IsDead()
+			&& stage_->OverlapsSpike(c.GetColliderCenter(), c.GetColliderHalfExtent())) {
 			c.ApplyDamage(100000.0f); // 即死。CheckKnockoutAndReset がリスポーンを処理する
+			if (spikeDeathOut) {
+				*spikeDeathOut = true;
+			}
 		}
 	};
 
@@ -570,8 +605,8 @@ void GameScene::UpdateStageGimmicks(float dt) {
 
 	applyBelt(*player_);
 	applyBelt(*enemy_);
-	applySpike(*player_);
-	applySpike(*enemy_);
+	applySpike(*player_, nullptr);
+	applySpike(*enemy_, &enemyDeathBySpike_);
 	applyPortal(*player_, playerInPortal_);
 	applyPortal(*enemy_, enemyInPortal_);
 
@@ -899,8 +934,8 @@ void GameScene::UpdateBattle(float dt, const CharacterInput& playerInput) {
 	if (koEnemy) {
 		// 敵が撃破/場外 = プレイヤーが1点。ここで敵が「学習」して強くなる。
 		playerModel_->OnPointConceded();
-		// 場外での自滅なら「穴に慎重になる」学習も進める。
-		enemyBrain_->NotifyDeath(enemyWasOutOfBounds);
+		// 場外での自滅、またはトゲ踏みなら「危険地形に慎重になる」学習も進める。
+		enemyBrain_->NotifyDeath(enemyWasOutOfBounds, enemyDeathBySpike_);
 	}
 	if (koPlayer) {
 		// プレイヤーが撃破/場外 = 敵が1点。倒し方の傾向を学習する。

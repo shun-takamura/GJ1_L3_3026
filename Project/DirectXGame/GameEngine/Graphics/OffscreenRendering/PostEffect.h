@@ -38,7 +38,10 @@ public:
 	/// <summary>
 	/// 初期化
 	/// </summary>
-	void Initialize(DirectXCore* dxCore, SRVManager* srvManager, uint32_t width, uint32_t height);
+	/// <param name="sceneClearColor">シーン RT のクリア色（RGBA 4要素）。nullptr なら (0,0,0,0)。
+	/// アプリの背景色をここに渡すと、何も描かれていない領域がその色で埋まる。</param>
+	void Initialize(DirectXCore* dxCore, SRVManager* srvManager, uint32_t width, uint32_t height,
+		const float sceneClearColor[4] = nullptr);
 
 	/// <summary>
 	/// シーン描画の開始

@@ -51,10 +51,11 @@ public:
 	void ResetForNewRound();
 
 	/// <summary>
-	/// 自分がやられた瞬間に GameScene が呼ぶ。場外(自滅)なら「穴に慎重になる」学習が進む。
+	/// 自分がやられた瞬間に GameScene が呼ぶ。場外(自滅)、またはトゲ等の即死ギミック踏みなら
+	/// 「危険地形に慎重になる」学習が進む（跳べる幅を狭め、崖・トゲの検知距離を広げる）。
 	/// この学習はラウンドを跨いで蓄積し、ResetForNewRound では消えない。
 	/// </summary>
-	void NotifyDeath(bool wasOutOfBounds);
+	void NotifyDeath(bool wasOutOfBounds, bool wasHazard = false);
 
 	State GetState() const { return state_; }
 	const char* GetStateName() const;
