@@ -378,7 +378,20 @@ private:
 	/// </summary>
 	void UpdateWeaponModel();
 
+	/// <summary>
+	/// 頭上のHPバー(背景の板+HP割合ぶんだけ幅が縮む前景の板)の位置・幅・色を
+	/// 現在の position_/hp_ に合わせて更新する。Update() の末尾で毎フレーム呼ぶ。
+	/// </summary>
+	void UpdateHpBar();
+
 	static constexpr float kModelScale = 1.0f;   // アニメモデルの表示スケール(Blender で約1.86m 相当)
+
+	// ---- 頭上HPバー ----
+	static constexpr float kHpBarWidth = 1.1f;    // 満タン時の幅
+	static constexpr float kHpBarHeight = 0.14f;  // 背景の板の高さ(前景はこれよりひと回り薄く見せる)
+	static constexpr float kHpBarYOffset = 1.05f; // position_.y からの高さ(頭の少し上に来る値)
+	std::unique_ptr<PrimitiveInstance> hpBarBg_;  // 背景(常に満タン幅・暗い色)
+	std::unique_ptr<PrimitiveInstance> hpBarFg_;  // 前景(HP割合ぶんの幅・緑→赤)
 
 	std::string name_;
 	Camera* camera_ = nullptr;
