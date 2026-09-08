@@ -62,6 +62,9 @@
     <ClCompile Include="Stage\StageCatalog.cpp">
       <Filter>Stage</Filter>
     </ClCompile>
+    <ClCompile Include="Stage\InstancedBlockRenderer.cpp">
+      <Filter>Stage</Filter>
+    </ClCompile>
     <ClCompile Include="Weapon\UnarmedWeapon.cpp">
       <Filter>Weapon</Filter>
     </ClCompile>
@@ -183,6 +186,9 @@
       <Filter>Stage</Filter>
     </ClInclude>
     <ClInclude Include="Stage\StageCatalog.h">
+      <Filter>Stage</Filter>
+    </ClInclude>
+    <ClInclude Include="Stage\InstancedBlockRenderer.h">
       <Filter>Stage</Filter>
     </ClInclude>
     <ClInclude Include="Weapon\ProjectileSpawnRequest.h">
