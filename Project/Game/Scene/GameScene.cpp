@@ -224,12 +224,16 @@ void GameScene::Initialize() {
 	player_ = std::make_unique<Character>();
 	player_->Initialize(camera_.get(), "Player", playerSpawn_);
 	player_->SetStage(stage_.get());
+#ifdef USE_IMGUI
 	player_->SetWeaponRenderContext(object3DManager_, dxCore_);
+#endif // USE_IMGUI
 
 	enemy_ = std::make_unique<Character>();
 	enemy_->Initialize(camera_.get(), "Enemy", enemySpawn_);
-	enemy_->SetStage(stage_.get());
+        enemy_->SetStage(stage_.get());
+#ifdef USE_IMGUI
 	enemy_->SetWeaponRenderContext(object3DManager_, dxCore_);
+#endif // USE_IMGUI
 
 	// 見た目の仮 Box をスキニング付きアニメモデルに差し替える(アセットが無ければ Box のまま)。
 	// プレイヤー=青 / 敵=赤。被弾中は赤・氷結中は水色に上書きされる。
@@ -410,6 +414,11 @@ void GameScene::LoadStage(int index) {
 	debugFlashes_.clear();
 	weaponSpawnTimer_ = kWeaponSpawnInterval;
 
+	// 爆発・被弾などの再生中エフェクトも旧ステージの位置に残ったままにしない。
+	// EffectManager はアプリ全体で1つのシングルトン(GameApp::Initialize で Initialize/Finalize)
+	// なので、ここで明示的に StopAll() しないと次のステージへそのまま持ち越されてしまう。
+	EffectManager::GetInstance()->StopAll();
+
 	playerInPortal_ = false;
 	enemyInPortal_ = false;
 
@@ -436,6 +445,13 @@ void GameScene::UpdateRoundCountdown(float dt) {
 	}
 	CollisionSystem::GetInstance()->Update();
 
+	// UpdateBattle 以外の状態でこれを呼ばないと、EffectManager/GPUParticleManager の
+	// シミュレーション(Update)が丸ごと止まる。StopAll() で止めたはずのエフェクトも、
+	// 実際に GPU 側のパーティクルバッファへ反映されるのは次の Update 呼び出しなので、
+	// これが無いと「消したはずのエフェクトが直前のフレームの見た目のまま静止して残る」
+	// (カウントダウン中ずっと固まって見える)原因になる。
+	UpdateGlobalEffects(camera_.get(), dxCore_ ? dxCore_->GetDeltaTime() : dt);
+
 	countdownRemaining_ -= dt;
 	if (countdownRemaining_ <= 0.0f) {
 		roundState_ = RoundState::Battle;
@@ -455,6 +471,10 @@ void GameScene::UpdateRoundEnd(float dt) {
 	}
 	CollisionSystem::GetInstance()->Update();
 
+	// UpdateRoundCountdown と同じ理由(コメント参照)で、決着直後の猶予中もエフェクトの
+	// シミュレーションだけは進めておく。撃破エフェクトそのものをここで見せ切るためにも必要。
+	UpdateGlobalEffects(camera_.get(), dxCore_ ? dxCore_->GetDeltaTime() : dt);
+
 	roundEndRemaining_ -= dt;
 	if (roundEndRemaining_ > 0.0f || roundEndActionTaken_) {
 		return;
@@ -466,6 +486,9 @@ void GameScene::UpdateRoundEnd(float dt) {
 
 	if (roundEndMatchOver_) {
 		// このセットは決着。結果を relay に残して Result シーンへ(ステージ切替はしない)。
+		// LoadStage を通らない経路なので、ここでも明示的に StopAll() しないと最後の一撃の
+		// 撃破エフェクトが Result シーンまで残ったまま持ち越されてしまう。
+		EffectManager::GetInstance()->StopAll();
 		MatchResultRelay::SetResult(matchRule_.GetWinner(), matchRule_.GetPlayerPoints(), matchRule_.GetEnemyPoints());
 		SceneManager::GetInstance()->ChangeScene("Result", TransitionType::Fade);
 	} else {
@@ -962,6 +985,13 @@ bool GameScene::CheckKnockoutAndReset(Character& target, MatchRule::Winner other
 
 	// ここに来た = target がHP0になったか、アリーナ外に出た(=やられた)
 	Log(std::string(targetLabel) + " が撃破/場外。相手に1ポイント\n");
+
+	// 撃破エフェクトはここで必ず1回だけ出す(HP0の直撃は各ヒット処理側でも出るが、
+	// ノックバックで場外に落ちて決着するケース ── 実際のプレイではこちらの方が多い ──
+	// には ResolveAttack/ResolveExplosion のどちらも通らず、今まで一切エフェクトが
+	// 無かったため)。武器やHP0/場外の別を問わず、撃破という結果そのものに紐付ける。
+	EffectManager::GetInstance()->Play("Block_Exprosion", target.GetPosition());
+
 	const bool matchOver = matchRule_.AddPoint(otherSide);
 	if (matchOver) {
 		const char* winnerLabel = (matchRule_.GetWinner() == MatchRule::Winner::Player) ? "Player" : "Enemy";
@@ -1083,6 +1113,12 @@ void GameScene::UpdateFlyingObjects(float dt) {
 			if (obj->IsDead()) {
 				diedFromCharacterHit = true;
 				AddDebugFlash(obj->GetPosition(), 0.25f, Vector4{ 0.2f, 1.0f, 0.2f, 1.0f }, 0.3f);
+				// 爆風武器(blastRadius>0)はこの直後の ResolveExplosion 側で "Block_Exprosion" を
+				// 出すので、ここでは通常弾(格闘の meller と同じ役割のヒットエフェクト)のみ出す。
+				// 二重に出さないための分岐。
+				if (obj->GetBlastRadius() <= 0.0f) {
+					EffectManager::GetInstance()->Play("meller", obj->GetPosition());
+				}
 			}
 		}
 
@@ -1147,6 +1183,11 @@ void GameScene::ResolveExplosion(const ArcingProjectile& obj) {
 	// 長くしているのは、爆風は一瞬で消えるヒットボックスと違い「どこまで届いたか」を
 	// 見て次の立ち回りを考えるための表示だから。
 	AddDebugFlash(center, blastRadius, Vector4{ 1.0f, 0.45f, 0.05f, 1.0f }, 0.5f);
+
+	// 見た目のエフェクトも出す(ステージの爆弾ブロックと同じ "Block_Exprosion" を流用)。
+	// 今まではデバッグ用ワイヤーフレームしか出ておらず、武器の爆風による撃破が
+	// 格闘の meller に対して見た目の演出だけ無いのは不自然だったための追加。
+	EffectManager::GetInstance()->Play("Block_Exprosion", center);
 
 	// 地形は「着弾点だけ」ではなく爆風半径ぶんまとめて削る(通常弾の着弾チップ削りより
 	// 広い範囲。直撃/地形当たり/寿命切れのどれで死んだかは問わない)。
@@ -1357,6 +1398,9 @@ void GameScene::Draw() {
 			tr->DrawText(winnerText, { (w - ww) * 0.5f, 260.0f }, 2.0f);
 		}
 
+#ifdef _DEBUG
+		// ここから下は動作確認用のデバッグ表示(操作説明・HP・得点・AI内部状態)。
+		// 本物のUI(フェーズ5)が入るまでの仮表示なので、Release/Development には出さない。
 		tr->DrawText("A/D : Move   W/A(pad) : Jump   S/Down(pad) : Crouch", { 32.0f, 32.0f }, 0.8f);
 		tr->DrawText("Mouse/RStick : Aim   LClick/RT(pad) : Attack   R/RClick/Y(pad) : Throw", { 32.0f, 64.0f }, 0.8f);
 		tr->DrawText("ESC / (B) : Title", { 32.0f, 96.0f }, 0.8f);
@@ -1411,6 +1455,7 @@ void GameScene::Draw() {
 			snprintf(weaponLine, sizeof(weaponLine), "Weapon: %s (Ammo: %d)", player_->GetEquippedWeaponName().c_str(), ammo);
 		}
 		tr->DrawText(weaponLine, { 32.0f, 192.0f }, 0.8f);
+#endif
 
 		tr->Flush(); // スプライトと同じタイミング(描画順の最後)で確定させる
 	}
