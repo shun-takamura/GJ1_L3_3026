@@ -97,6 +97,11 @@ private:
 
 	std::unique_ptr<Camera> camera_;
 
+	// アリーナの背景。カメラの奥に大きな Plane を置いてテクスチャを貼るだけで、
+	// 当たり判定には関与しない(SpriteInstance だと深度を無視して最前面に出てしまうため
+	// 3D の一部として奥へ置く。TitleScene::background_ と同じ理由)。
+	std::unique_ptr<PrimitiveInstance> background_;
+
 	// 操作キャラ / 敵キャラ。敵の行動は enemyBrain_ が CharacterInput として決める
 	// (Character 側はプレイヤーと敵を区別しない。Character.h の設計コメント参照)。
 	std::unique_ptr<Character> player_;
