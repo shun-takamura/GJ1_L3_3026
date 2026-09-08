@@ -1,5 +1,6 @@
 #include "Character.h"
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <string>
@@ -76,6 +77,18 @@ void Character::Initialize(Camera* camera, const std::string& name, const Vector
 	visual_->SetScale({ 0.9f, kRestHeight * 2.0f, 0.9f }); // 高さ = kRestHeight*2 (中心が kRestHeight のとき足元がちょうど y=0 に来る)
 	visual_->SetTranslate(position_);
 
+	// 頭上のHPバー。テクスチャは PrimitiveInstance の既定(白1x1)のままで、色だけで表現する
+	// (新規リソース不要)。背景を少し大きめの奥行きにして前景を薄くすることで、
+	// 前景がHPに応じて縮んでも背景が枠のように見え、Zファイティングも避けられる。
+	hpBarBg_ = std::make_unique<PrimitiveInstance>();
+	hpBarBg_->Initialize(PrimitiveInstance::PrimitiveType::Box, name_ + "_HpBarBg");
+	hpBarBg_->SetCamera(camera_);
+	hpBarBg_->GetMesh().SetColor({ 0.1f, 0.1f, 0.1f, 0.85f });
+
+	hpBarFg_ = std::make_unique<PrimitiveInstance>();
+	hpBarFg_->Initialize(PrimitiveInstance::PrimitiveType::Box, name_ + "_HpBarFg");
+	hpBarFg_->SetCamera(camera_);
+
 	SetupCollider();
 
 	// 初期装備は常に素手(UnarmedWeapon)。equippedWeapon_ が nullptr になる瞬間を作らないことで、
@@ -88,6 +101,8 @@ void Character::Finalize() {
 	animModel_.reset();
 	visual_.reset();
 	weaponModel_.reset();
+	hpBarBg_.reset();
+	hpBarFg_.reset();
 }
 
 void Character::SetWeaponRenderContext(Object3DManager* object3DManager, DirectXCore* dxCore) {
@@ -520,6 +535,9 @@ void Character::Update(float dt, float moveX, bool jumpTriggered, bool crouchHel
 	// 手元の武器モデル(持ち替え検出・照準追従)。
 	UpdateWeaponModel();
 
+	// 頭上のHPバー。
+	UpdateHpBar();
+
 	// 当たり判定カプセルを今の姿勢(立ち/しゃがみ)に合わせる。
 	// しゃがんだフレームは、この時点で isCrouching_ が確定している。
 	SyncColliderToPose();
@@ -529,6 +547,13 @@ void Character::Draw() {
 	// アニメモデルがある場合は DrawAnimatedModel(Object3D パス)で描くのでここでは何もしない。
 	if (!animChara_ && visual_) {
 		visual_->Draw();
+	}
+	// 頭上のHPバーは見た目(Box/アニメモデル)がどちらでも常に描く。
+	if (hpBarBg_) {
+		hpBarBg_->Draw();
+	}
+	if (hpBarFg_) {
+		hpBarFg_->Draw();
 	}
 }
 
@@ -671,6 +696,35 @@ void Character::DrawWeaponModel(DirectXCore* dxCore) {
 	if (weaponModel_) {
 		weaponModel_->Draw(dxCore);
 	}
+}
+
+void Character::UpdateHpBar() {
+	if (!hpBarBg_ || !hpBarFg_) {
+		return;
+	}
+
+	const Vector3 barCenter{ position_.x, position_.y + kHpBarYOffset, position_.z };
+
+	// 背景はHPに関わらず常に満タン幅のまま。前景よりわずかに奥行きを薄くして
+	// 前景の"枠"のように見せる(色そのものは暗いグレーで塗る)。
+	hpBarBg_->SetScale({ kHpBarWidth, kHpBarHeight, 0.05f });
+	hpBarBg_->SetTranslate(barCenter);
+	hpBarBg_->Update();
+
+	// HP割合ぶんだけ幅が縮む前景。左端を基準に縮めたいので、中心位置を
+	// (縮んだ分の半分だけ左へ)ずらす。奥行きを背景よりわずかに大きくしておくと、
+	// カメラの向きを問わずどちらかの面が必ず背景より手前に来るのでZファイティングを避けられる。
+	const float ratio = std::clamp(hp_ / kMaxHP, 0.0f, 1.0f);
+	const float fgWidth = kHpBarWidth * ratio;
+	const Vector3 fgCenter{
+		barCenter.x - (kHpBarWidth - fgWidth) * 0.5f,
+		barCenter.y,
+		barCenter.z };
+	hpBarFg_->SetScale({ fgWidth, kHpBarHeight * 0.7f, 0.07f });
+	hpBarFg_->SetTranslate(fgCenter);
+	// 満タン=緑、0=赤の単純な2色補間(新規リソース不要でHPの危険度を視覚化する)。
+	hpBarFg_->GetMesh().SetColor({ 1.0f - ratio, ratio, 0.0f, 1.0f });
+	hpBarFg_->Update();
 }
 
 bool Character::ConsumePendingAttack(AttackHitbox& outHitbox) {
