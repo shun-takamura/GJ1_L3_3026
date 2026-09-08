@@ -163,6 +163,9 @@ public:
     const std::string& GetModelFileName() const { return modelFileName_; }
     const std::string& GetDirectoryPath() const { return directoryPath_; }
 
+    // ロード済み ModelInstance（マテリアル CB を直接触りたいとき用。未ロードなら nullptr）。
+    ModelInstance* GetModelInstance() const { return modelInstance_; }
+
     //==============================
     // 初期化・更新・描画
     //==============================

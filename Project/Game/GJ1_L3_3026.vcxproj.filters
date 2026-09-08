@@ -35,9 +35,6 @@
     <ClCompile Include="Scene\SceneFactory.cpp">
       <Filter>Scene</Filter>
     </ClCompile>
-    <ClCompile Include="Scene\TitleScene.cpp">
-      <Filter>Scene</Filter>
-    </ClCompile>
     <ClCompile Include="Scene\GameScene.cpp">
       <Filter>Scene</Filter>
     </ClCompile>
@@ -135,9 +132,6 @@
       <Filter>Scene</Filter>
     </ClInclude>
     <ClInclude Include="Scene\SceneFactory.h">
-      <Filter>Scene</Filter>
-    </ClInclude>
-    <ClInclude Include="Scene\TitleScene.h">
       <Filter>Scene</Filter>
     </ClInclude>
     <ClInclude Include="Scene\GameScene.h">
