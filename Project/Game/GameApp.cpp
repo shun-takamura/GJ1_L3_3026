@@ -9,13 +9,16 @@
 #include "Effect/EffectManager.h"
 #include "IImGuiEditable.h"
 #include "Physics/CollisionSystem.h"
+#include "PostEffect.h"
+#include "RenderTexture.h"
+#include "WindowsApplication.h"
+#include "Object3DManager.h"
+#include "Camera.h"
 // ImGuiManager の各メソッドは Release では中身が空展開されるので、include は常に行う
 #include "ImGuiManager.h"
 
 #ifdef _DEBUG
 #include "Effect/EffectEditorWindow.h"
-#include "RenderTexture.h"
-#include "WindowsApplication.h"
 #include "Scene.h"
 #endif
 
@@ -67,6 +70,16 @@ void GameApp::Initialize() {
 	EffectManager::GetInstance()->Initialize(gpuParticleManager_.get());
 	EffectManager::GetInstance()->LoadAllDefsInDirectory("Resources/Json/Effects");
 
+	//===================================
+	// ポストエフェクト。シーンを一度 RT に描いてからフィルタ合成する。
+	// 主目的はエフェクトの画面歪み（ポータルの Warp）。歪み源が無いフレームはパスをスキップする。
+	//===================================
+	postEffect_ = std::make_unique<PostEffect>();
+	// シーン RT を背景色でクリアさせる（何も描かれていない領域がこの色になる）。
+	const float sceneClearColor[4] = { 0.1f, 0.25f, 0.5f, 1.0f };
+	postEffect_->Initialize(dxCore_.get(), srvManager_.get(),
+		WindowsApplication::kClientWidth, WindowsApplication::kClientHeight, sceneClearColor);
+
 #ifdef _DEBUG
 	ImGuiManager::Instance().SetGPUParticleManager(gpuParticleManager_.get());
 
@@ -83,8 +96,8 @@ void GameApp::Initialize() {
 			return SceneManager::GetInstance()->GetCurrentSceneName().c_str();
 		};
 		hooks.getFramework = []() -> Framework* { return GameApp::GetInstance(); };
-		// PostEffect は使わない最小構成なので getPostEffect は未配線のまま。
-		// エンティティのグループ分けもしていないので Hierarchy は 1 グループになる。
+		hooks.getPostEffect = []() -> PostEffect* { return GameApp::GetPostEffect(); };
+		// エンティティのグループ分けはしていないので Hierarchy は 1 グループになる。
 		ImGuiManager::SetHostHooks(hooks);
 	}
 
@@ -116,37 +129,84 @@ void GameApp::Finalize() {
 		gpuParticleManager_->Finalize();
 		gpuParticleManager_.reset();
 	}
+	if (postEffect_) {
+		postEffect_->Finalize();
+		postEffect_.reset();
+	}
 
 	Framework::Finalize();   // 中で SceneManager::Finalize が呼ばれる
 	sceneFactory_.reset();
 }
 
-void GameApp::Draw() {
-	// PostEffect / ID パス / 歪みパスを使わない最小構成。
-	//   Debug   : シーン → Scene ビューポート用 RT、スワップチェーンには ImGui だけ
-	//   Release : シーン → スワップチェーンへ直接
+void GameApp::RenderSceneWithPostEffect(RenderTexture* output) {
 	auto* cmd = dxCore_->GetCommandList();
 	auto* sceneManager = SceneManager::GetInstance();
 
-	const float clearColor[4] = { 0.1f, 0.25f, 0.5f, 1.0f };
+	const uint32_t w = WindowsApplication::kClientWidth;
+	const uint32_t h = WindowsApplication::kClientHeight;
+
+	//---------------------------------------------
+	// 1. シーンを postEffect_ の RT へ描く。
+	//    RT の色クリアは BeginSceneRender 内で行われる（Initialize で渡した背景色）。
+	//---------------------------------------------
+	D3D12_CPU_DESCRIPTOR_HANDLE dsv = dxCore_->GetDsvHandle();
+	postEffect_->BeginSceneRender(cmd, &dsv);
+	srvManager_->PreDraw();
+	cmd->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+
+	sceneManager->Draw();
+	sceneManager->DrawTransition();   // シーンの上に覆いかぶさる（フィルタも掛かる）
+
+	postEffect_->EndSceneRender(cmd);
+
+	//---------------------------------------------
+	// 2. 歪みパス。useDistortion なエフェクトプリミティブが歪みマップを distortionRT へ書き込む。
+	//    歪み源が無いフレームはパス全体をスキップ（GPU 節約。合成側フィルタも同じフラグで ON/OFF）。
+	//---------------------------------------------
+	const bool distortionActive = EffectManager::GetInstance()->HasActiveDistortionSource();
+	if (postEffect_->distortion) {
+		postEffect_->distortion->SetEnabled(distortionActive);
+	}
+	if (distortionActive) {
+		postEffect_->BeginDistortionPass(cmd);
+		// BeginDistortionPass は distortionRT のクリアだけ。歪みプリミティブは深度テスト（書き込みなし）
+		// を行う PSO なので、RTV + DSV を明示バインドしないと null DSV で #615 になる。
+		auto rtv = postEffect_->GetDistortionRT()->GetRTVHandle();
+		auto ddsv = dxCore_->GetDsvHandle();
+		cmd->OMSetRenderTargets(1, &rtv, false, &ddsv);
+		D3D12_VIEWPORT vp{ 0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h), 0.0f, 1.0f };
+		D3D12_RECT scissor{ 0, 0, static_cast<LONG>(w), static_cast<LONG>(h) };
+		cmd->RSSetViewports(1, &vp);
+		cmd->RSSetScissorRects(1, &scissor);
+		srvManager_->PreDraw();
+		EffectManager::GetInstance()->DrawDistortionPass();
+		postEffect_->EndDistortionPass(cmd);
+	}
+
+	//---------------------------------------------
+	// 3. フィルタ合成して output（nullptr ならスワップチェーン）へ出力
+	//---------------------------------------------
+	if (!output) {
+		dxCore_->BeginDraw(); // スワップチェーン出力時は Draw の前に呼ぶ必要がある
+		srvManager_->PreDraw();
+	}
+	if (Camera* cam = object3DManager_->GetDefaultCamera()) {
+		postEffect_->SetProjectionMatrix(cam->GetProjectionMatrix()); // Outline 系が射影行列を要る
+	}
+	postEffect_->Draw(cmd, output);
+}
+
+void GameApp::Draw() {
+	//   Debug   : シーン(+PostEffect) → Scene ビューポート用 RT、スワップチェーンには ImGui だけ
+	//   Release : シーン(+PostEffect) → スワップチェーンへ直接
 
 #ifdef _DEBUG
-	//---------------------------------------------
-	// 1. シーンを Scene ビューポート用 RT へ描く
-	//---------------------------------------------
-	{
-		D3D12_CPU_DESCRIPTOR_HANDLE dsv = dxCore_->GetDsvHandle();
-		// BeginRender がクリア・RTV/DSV バインド・ビューポート設定までやる
-		viewportRenderTexture_->BeginRender(cmd, &dsv);
-		cmd->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+	const float clearColor[4] = { 0.1f, 0.25f, 0.5f, 1.0f };
 
-		srvManager_->PreDraw();
-		sceneManager->Draw();
-		sceneManager->DrawTransition();   // シーンの上に覆いかぶさる
-
-		// SRV 状態へ戻す（ImGui::Image が読めるように）
-		viewportRenderTexture_->EndRender(cmd);
-	}
+	//---------------------------------------------
+	// 1. シーンを PostEffect 経由で Scene ビューポート用 RT へ描く
+	//---------------------------------------------
+	RenderSceneWithPostEffect(viewportRenderTexture_.get());
 
 	//---------------------------------------------
 	// 2. Effect Editor のプレビュー RT
@@ -166,12 +226,7 @@ void GameApp::Draw() {
 
 	ImGuiManager::Instance().EndFrame();
 #else
-	dxCore_->BeginDraw();
-	dxCore_->ClearRenderTarget(clearColor);
-	srvManager_->PreDraw();
-
-	sceneManager->Draw();
-	sceneManager->DrawTransition();
+	RenderSceneWithPostEffect(nullptr); // 中で dxCore_->BeginDraw する
 #endif
 
 	dxCore_->EndDraw();

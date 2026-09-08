@@ -228,6 +228,15 @@
   </Target>
   <ImportGroup Label="ExtensionTargets" />
   <!--
+    Release ビルドの成果物を配布 zip にまとめる。
+    Release 構成のときだけ Build 後に走る。作業ディレクトリは $(SolutionDir)(= Project/)。
+    package_release.py は相対パスを Project/ 基準で解決する前提。
+  -->
+  <Target Name="PackageRelease" AfterTargets="CopyRuntimeDlls" Condition="'$(Configuration)'=='Release'">
+    <Message Importance="high" Text="Packaging release..." />
+    <Exec Command="chcp 65001 &gt;nul &amp;&amp; py tools\Python\package_release.py --silent" WorkingDirectory="$(SolutionDir)" />
+  </Target>
+  <!--
     アセットコンバータ。Assets/ に置いた元データを Resources/ へ変換する。
     gdeflate_compress.exe は配布物の bin/ に同梱されている。
   -->

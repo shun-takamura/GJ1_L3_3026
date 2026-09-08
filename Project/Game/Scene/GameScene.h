@@ -10,6 +10,7 @@
 #include "Character/Character.h"
 #include "Stage/StageGrid.h"
 #include "Stage/StageCatalog.h"
+#include "Effect/EffectManager.h"
 #include "Weapon/ArcingProjectile.h"
 #include "Weapon/WeaponPickup.h"
 #include "Weapon/FireHazard.h"
@@ -65,6 +66,15 @@ private:
 	void UpdateStageGimmicks(float dt);
 
 	/// <summary>
+	/// 現在のステージの各ポータル位置に Warp エフェクト（loop）を常駐再生し直す。
+	/// 前のステージぶんのハンドルは Stop する。Initialize / LoadStage の末尾で呼ぶ。
+	/// </summary>
+	void RefreshPortalEffects();
+
+	// 各ポータルで再生中の Warp エフェクトのハンドル（ステージ切り替え時に Stop する）。
+	std::vector<EffectHandle> portalEffectHandles_;
+
+	/// <summary>
 	/// roundState_ == Battle のときだけ Update() から呼ばれる、通常のゲーム進行本体。
 	/// 入力→AI思考→Character::Update→当たり判定→ステージギミック→攻撃判定→弾/武器→
 	/// 場外/HP0判定(得点・ステージ切替・勝敗判定)までをすべてここで行う。
@@ -82,6 +92,10 @@ private:
 	// ポータルは「セルから出るまで再ワープしない」。今フレーム、キャラがポータルに乗っているか。
 	bool playerInPortal_ = false;
 	bool enemyInPortal_ = false;
+
+	// 敵がこのフレームにトゲで即死したか。UpdateStageGimmicks で立て、KO 判定で
+	// EnemyBrain::NotifyDeath へ渡して消費する（トゲ自滅を AI の慎重さ学習に反映）。
+	bool enemyDeathBySpike_ = false;
 
 	// ベルトコンベアに乗っているキャラを毎秒どれだけ横へ流すか。
 	static constexpr float kBeltSpeed = 4.0f;

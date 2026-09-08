@@ -2,9 +2,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
-#include <fstream>
+#include <sstream>
+#include <vector>
 
+#include "AssetLocator.h"
 #include "Camera.h"
 #include "Log.h"
 #include "Primitive/PrimitiveInstance.h"
@@ -23,7 +26,6 @@ namespace {
 	const Vector4 kColorBeltLeft { 0.15f, 0.35f, 0.95f, 1.0f }; // 左ベルト = 青
 	const Vector4 kColorBeltRight{ 0.95f, 0.85f, 0.10f, 1.0f }; // 右ベルト = 黄
 	const Vector4 kColorBomb     { 0.95f, 0.12f, 0.10f, 1.0f }; // 爆弾ブロック = 赤
-	const Vector4 kColorPortal   { 0.65f, 0.20f, 0.90f, 1.0f }; // ポータル = 紫
 
 	StageGrid::GimmickType GimmickFromValue(int value) {
 		switch (value % 10) {
@@ -55,8 +57,9 @@ bool StageGrid::LoadFromCsv(const std::string& path) {
 		for (int& v : row) v = 0;
 	}
 
-	std::ifstream ifs(path);
-	if (!ifs) {
+	// pack モードでも読めるよう AssetLocator 経由で取得（FS モードはディスク直読み）。
+	std::vector<uint8_t> bytes = AssetLocator::GetInstance()->LoadAll(path);
+	if (bytes.empty()) {
 		Log("StageGrid: CSV を開けません: " + path + " -> フォールバック床を使用\n");
 		for (int cx = 0; cx < kCols; ++cx) {
 			cells_[kRows - 1][cx] = 10;
@@ -65,6 +68,7 @@ bool StageGrid::LoadFromCsv(const std::string& path) {
 		return false;
 	}
 
+	std::istringstream ifs(std::string(bytes.begin(), bytes.end()));
 	std::string line;
 	int row = 0;
 	while (row < kRows && std::getline(ifs, line)) {
@@ -196,12 +200,14 @@ void StageGrid::BuildTilesAndGimmicks() {
 					g.model->SetScale({ kCellSize, kCellSize, kCellSize });
 					g.model->SetTranslate(pos);
 				}
+			} else if (type == GimmickType::Portal) {
+				// ポータルは見た目を Warp エフェクトで出す（GameScene が GetPortalWorldPositions を見て
+				// EffectManager::Play する）。ここでは仮ボックスを作らない。
 			} else {
-				// 左ベルト＝青 / 右ベルト＝黄 / 爆弾＝赤 / ポータル＝紫 の仮ボックス。
-				Vector4 color = kColorPortal;
+				// 左ベルト＝青 / 右ベルト＝黄 / 爆弾＝赤 の仮ボックス。
+				Vector4 color = kColorBomb;
 				if (type == GimmickType::BeltLeft)  color = kColorBeltLeft;
 				if (type == GimmickType::BeltRight) color = kColorBeltRight;
-				if (type == GimmickType::Bomb)      color = kColorBomb;
 
 				g.visual = std::make_unique<PrimitiveInstance>();
 				g.visual->Initialize(PrimitiveInstance::PrimitiveType::Box, "Gimmick_" + tag);
@@ -435,6 +441,16 @@ std::vector<StageGrid::BombExplosion> StageGrid::ConsumeBombExplosions() {
 	return out;
 }
 
+std::vector<Vector3> StageGrid::GetPortalWorldPositions() const {
+	std::vector<Vector3> out;
+	for (const auto& g : gimmicks_) {
+		if (g.type == GimmickType::Portal && !g.destroyed) {
+			out.push_back(CellToWorldCenter(g.cx, g.cy));
+		}
+	}
+	return out;
+}
+
 int StageGrid::DamageSphere(const Vector3& center, float radius, float damage, bool permanent) {
 	int broke = 0;
 	const float half = kCellSize * 0.5f;
@@ -511,6 +527,12 @@ bool StageGrid::IsSolidCell(int cx, int cy) const {
 
 bool StageGrid::IsBreakableCell(int cx, int cy) const {
 	return GetChip(cx, cy) / 10 == kKindBreakable;
+}
+
+bool StageGrid::IsBreakableAt(const Vector3& worldPos) const {
+	int cx, cy;
+	WorldToCell(worldPos, cx, cy);
+	return IsBreakableCell(cx, cy);
 }
 
 Vector3 StageGrid::CellToWorldCenter(int cx, int cy) const {

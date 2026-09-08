@@ -32,6 +32,16 @@ namespace AINav {
 			return hz;
 		}
 
+		// トゲ（32 等の即死ギミック）は solid ではないので下の床／壁判定には現れない。
+		// 1 歩先の「足元少し下 〜 頭頂」の縦帯にトゲが掛かっているかを別に見る。
+		{
+			const float loY = feetY - 0.4f;
+			const float hiY = pos.y + feetHalfY;
+			hz.spikeAhead = stage.OverlapsSpike(
+				{ x0, (loY + hiY) * 0.5f, pos.z },
+				{ 0.24f, (hiY - loY) * 0.5f, 0.24f });
+		}
+
 		// 胴体を「脚(feetY〜中心)」と「頭(中心〜頭頂)」に分けて壁を見る。
 		//   脚が塞がっている            → しゃがんでも無理な本物の壁
 		//   頭だけ塞がっている＋床がある → しゃがみ歩きで通れる隙間
@@ -40,10 +50,17 @@ namespace AINav {
 		const bool headBlocked = SolidBand(stage, x0, pos.y + bandHalf, pos.z, bandHalf);
 		const bool groundAhead = GroundWithin(stage, x0, feetY, pos.z, 1.0f);
 
+		// 前方の壁セルが「壊れる床」か（脚・頭どちらの高さで塞がれていても拾う）。
+		auto wallIsBreakable = [&]() {
+			return stage.IsBreakableAt({ x0, pos.y - bandHalf, pos.z })
+				|| stage.IsBreakableAt({ x0, pos.y + bandHalf, pos.z });
+		};
+
 		if (legBlocked) {
 			hz.wallAhead = true;
 			// 壁の上端が「頭 + maxJumpUp」より高ければ、ジャンプしても越えられない。
 			hz.wallTall = SolidBand(stage, x0, pos.y + feetHalfY + maxJumpUp, pos.z, feetHalfY * 0.5f);
+			hz.breakableAhead = wallIsBreakable();
 			return hz;
 		}
 		if (headBlocked) {
@@ -52,6 +69,7 @@ namespace AINav {
 			} else {
 				hz.wallAhead = true;   // 頭は塞がり足元は穴 = 進めない
 				hz.wallTall = true;    // 頭上が塞がっている以上ジャンプは無意味
+				hz.breakableAhead = wallIsBreakable();
 			}
 			return hz;
 		}
@@ -69,14 +87,20 @@ namespace AINav {
 			}
 			const bool landing = GroundWithin(stage, x, feetY + maxJumpUp, pos.z, maxJumpUp + 2.5f);
 			const bool blocked = SolidBand(stage, x, pos.y + 0.3f, pos.z, feetHalfY * 0.6f);
-			if (landing && !blocked) {
+			// 着地セルにトゲがあるならそこは着地点として認めない（跳んだ先で即死しない）。
+			const bool landingSpiked = stage.OverlapsSpike(
+				{ x, feetY, pos.z }, { 0.3f, feetHalfY + maxJumpUp, 0.3f });
+			if (landing && !blocked && !landingSpiked) {
 				hz.jumpClears = true;
 				break;
 			}
 		}
 
 		// 前方に着地は無いが、真下〜maxSafeDrop に床があれば「歩いて飛び降りれば着地できる」。
-		if (!hz.jumpClears && GroundWithin(stage, x0, feetY, pos.z, maxSafeDrop)) {
+		// ただし飛び降り先にトゲがあるなら降りない。
+		if (!hz.jumpClears && GroundWithin(stage, x0, feetY, pos.z, maxSafeDrop)
+			&& !stage.OverlapsSpike({ x0, feetY - maxSafeDrop * 0.5f, pos.z },
+				{ 0.24f, maxSafeDrop * 0.5f, 0.24f })) {
 			hz.dropAhead = true;
 		}
 		return hz;

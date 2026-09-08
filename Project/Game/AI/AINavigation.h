@@ -18,6 +18,9 @@ namespace AINav {
 		bool crouchAhead = false; // 頭上だけ塞がった隙間。しゃがみ歩きで通れる
 		bool dropAhead = false;   // 前方は穴だが、maxSafeDrop 以内に下段の床がある（歩いて飛び降りれば着地）
 		bool wallTall = false;    // wallAhead のとき、上端が maxJumpUp より高い＝ジャンプでは越えられない
+		bool spikeAhead = false;  // 進行方向の足元〜頭にトゲ（即死ギミック）。踏むと死ぬので edgeAhead 同様に止める
+		                          // （jumpClears が立っていれば、トゲの向こうへ跳び越すのは可）
+		bool breakableAhead = false; // wallAhead の壁が「壊れる床」。攻撃で崩して進める（EnemyBrain が判断）
 	};
 
 	/// <summary>

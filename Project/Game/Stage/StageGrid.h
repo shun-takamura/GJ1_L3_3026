@@ -107,20 +107,24 @@ public:
 	/// どこか 1 マスでもベルトコンベアなら流れる向き（-1=左 / +1=右）を返す。無ければ 0。
 	/// edgeMargin だけ左右を内側へ詰めてから走査する（爪先だけ掛かった状態を除外したいときは正の値、
 	/// 足がわずかでも触れていれば拾いたいときは 0 か負の値）。</summary>
-	int BeltDirUnderAabb(const Vector3& center, const Vector3& half, float edgeMargin) const;
+	int BeltDirUnderAabb(const Vector3& center, const Vector3& half, float edgeMargin) const override;
 
 	/// <summary>点 (worldX, worldY) の直下のセルがベルトなら流れる向き（-1=左 / +1=右）、
 	/// ベルトでなければ 0。端でどちらの足が乗っているかの判定に使う。</summary>
 	int BeltDirAtPoint(float worldX, float worldY) const;
 
 	/// <summary>中心 center・半サイズ half の AABB がトゲ（32）のセルと重なっているか（＝即死）。</summary>
-	bool OverlapsSpike(const Vector3& center, const Vector3& half) const;
+	bool OverlapsSpike(const Vector3& center, const Vector3& half) const override;
 
 	/// <summary>中心 center・半サイズ half の AABB がいずれかのポータルセルと重なっていれば true を返し、
 	/// 出口ワールド座標を outDest に入れる。出口は「重なっていない」ポータルからランダムに 1 つ。
 	/// 重なっていないポータルが 1 つも無ければ（＝全ポータルに跨っている / 単独ポータル）false。
 	/// 「出るまで再ワープしない」制御は呼び出し側（GameScene）が行う。</summary>
 	bool TryPortal(const Vector3& center, const Vector3& half, Vector3& outDest);
+
+	/// <summary>生存しているポータルセルの中心ワールド座標一覧（GameScene が Warp エフェクトを
+	/// 各ポータル位置に常駐再生するために使う）。</summary>
+	std::vector<Vector3> GetPortalWorldPositions() const;
 
 	/// <summary>中心 center・半径 radius の球に重なる爆弾ブロックの信管を開始する（既に作動中なら無視）。
 	/// 近接攻撃・弾の着弾・爆発など「攻撃が当たった」あらゆる箇所から呼ぶ。</summary>
@@ -150,6 +154,7 @@ public:
 	StageMoveResult MoveAabb(const Vector3& from, const Vector3& to, const Vector3& half) const override;
 	bool  SegmentHitsSolid(const Vector3& a, const Vector3& b) const override;
 	bool  IsPrecariousBreakableFloor(const Vector3& pos) const override;
+	bool  IsBreakableAt(const Vector3& worldPos) const override;
 
 private:
 	struct Tile {

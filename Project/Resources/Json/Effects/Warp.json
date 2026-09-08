@@ -7,7 +7,7 @@
       "displayName": "LensDistortion",
       "meshType": 3,
       "ringParams": {
-        "outerRadius": 1.5,
+        "outerRadius": 0.5,
         "innerRadius": 0,
         "divisions": 32,
         "innerColor": [
@@ -314,7 +314,7 @@
       "displayName": "Warp",
       "meshType": 3,
       "ringParams": {
-        "outerRadius": 1,
+        "outerRadius": 0.5,
         "innerRadius": 0,
         "divisions": 32,
         "innerColor": [
@@ -545,8 +545,8 @@
           ]
         ]
       },
-      "texturePath": "Resources/Textures/Effect/Glow_00.dds",
-      "blendMode": 2,
+      "texturePath": "Resources/Textures/Warp.dds",
+      "blendMode": 0,
       "timeGroup": 0,
       "billboardMode": "Full",
       "depthWrite": false,

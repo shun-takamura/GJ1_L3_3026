@@ -1,10 +1,10 @@
 #include "Character.h"
 
 #include <cmath>
-#include <filesystem>
 #include <string>
 #include <utility>
 
+#include "AssetLocator.h"
 #include "Camera.h"
 #include "Common/IStageQuery.h"
 #include "Physics/CollisionGeometry.h"
@@ -106,7 +106,8 @@ void Character::SetupAnimatedModel(Object3DManager* object3DManager,
 
 	// アセット未生成(cook 前)でもゲームは Box のまま動くようにする。
 	if (!object3DManager || !skinningComputeManager || !dxCore || !srvManager) return;
-	if (!std::filesystem::exists(kAnimMeshPath)) return;
+	// pack モードでも動くよう AssetLocator に存在を問い合わせる（生ディスクを見ない）。
+	if (!AssetLocator::GetInstance()->Exists(kAnimMeshPath)) return;
 
 	animModel_ = std::make_unique<AnimatedModelInstance>();
 	animModel_->Initialize(ModelManager::GetInstance()->GetModelCore(),
@@ -121,7 +122,7 @@ void Character::SetupAnimatedModel(Object3DManager* object3DManager,
 	animChara_->SetMaterialColor(teamColor_);
 
 	currentClipIndex_ = CLIP_IDLE;
-	if (std::filesystem::exists(ClipPath(CLIP_IDLE))) {
+	if (AssetLocator::GetInstance()->Exists(ClipPath(CLIP_IDLE))) {
 		animChara_->PlayAnimation(ClipPath(CLIP_IDLE), 0.0f);
 		animChara_->SetLoop(true);
 	}
@@ -603,7 +604,7 @@ void Character::UpdateAnimationState(float dt, float moveX) {
 
 	if (want != currentClipIndex_) {
 		const std::string path = ClipPath(want);
-		if (std::filesystem::exists(path)) {
+		if (AssetLocator::GetInstance()->Exists(path)) {
 			currentClipIndex_ = want;
 			// ループ系はゆっくり、単発アクションはキビキビ切り替える。
 			const bool snappy = (want == CLIP_HIT || want == CLIP_SHOOT || want == CLIP_PUNCH
@@ -887,7 +888,7 @@ void Character::ResetForNewRound(const Vector3& spawnPos) {
 	if (animChara_) {
 		animChara_->SetMaterialColor(teamColor_);
 		currentClipIndex_ = CLIP_IDLE;
-		if (std::filesystem::exists(ClipPath(CLIP_IDLE))) {
+		if (AssetLocator::GetInstance()->Exists(ClipPath(CLIP_IDLE))) {
 			animChara_->PlayAnimation(ClipPath(CLIP_IDLE), 0.0f);
 			animChara_->SetLoop(true);
 		}
