@@ -7,6 +7,7 @@
 #include "Camera.h"
 #include "Vector4.h"
 #include "Primitive/PrimitiveInstance.h"
+#include "Object3DInstance.h"
 #include "Character/Character.h"
 #include "Stage/StageGrid.h"
 #include "Stage/StageCatalog.h"
@@ -48,7 +49,32 @@ public:
 
 	Camera* GetCamera() override { return camera_.get(); }
 
+	/// <summary>
+	/// アトラクト(デモ)モードを有効にする。SceneFactory が "Title" 用の GameScene に対して呼ぶ。
+	/// このモードでは:
+	///   - ステージは常に Sample 固定(ランダム抽選しない)。
+	///   - プレイヤー枠も playerBrain_ が動かす(敵 AI 同士のデモプレイ)。
+	///   - セットが決着しても Result へ遷移せず、得点をリセットして無限にループする。
+	///   - ESC/(B) でのタイトル復帰は無効。代わりに SPACE/Enter/(A) で本編(Game)へ入る。
+	/// Initialize() より前に呼ぶこと。
+	/// </summary>
+	void SetAttractMode(bool on) { attractMode_ = on; }
+
 private:
+	// アトラクト(デモ)モードか。SetAttractMode 参照。
+	bool attractMode_ = false;
+
+	/// <summary>起動時 / ラウンド跨ぎで読み込むステージ index を決める。
+	/// アトラクト時は名前に "Sample" を含む最初のステージ(無ければ 0)、通常時はランダム抽選。</summary>
+	int PickStartStageIndex() const;
+
+	/// <summary>
+	/// brain に self/target・ステージ・最寄り pickup・飛来脅威を詰めた BrainContext を渡して
+	/// このフレームの CharacterInput を得る。敵 AI にもアトラクト時のプレイヤー AI にも使う。
+	/// </summary>
+	CharacterInput DecideAiInput(EnemyBrain& brain, Character& self, Character& target,
+		const PlayerModel* model, float dt);
+
 	// Resources/Stages/*.csv の一覧。起動時にランダムで1枚選び、デバッグ ImGui から切り替えられる。
 	StageCatalog stageCatalog_;
 	int currentStageIndex_ = 0;
@@ -126,6 +152,14 @@ private:
 	static constexpr bool kEnemyTurretMode = false;
 	std::unique_ptr<EnemyBrain> enemyBrain_;
 	std::unique_ptr<PlayerModel> playerModel_;
+
+	// アトラクト(デモ)モードでプレイヤー枠を動かす AI。通常モードでは生成しない。
+	std::unique_ptr<EnemyBrain> playerBrain_;
+
+	// アトラクト(デモ)モードで画面上方に表示するタイトルロゴ(Title.mesh)。通常モードでは生成しない。
+	std::unique_ptr<Object3DInstance> titleLogo_;
+	// タイトルロゴの UV を毎フレーム横スクロールさせる量(0..1 でループ)。虹テクスチャが流れる。
+	float titleLogoUvScroll_ = 0.0f;
 
 	// ステージ(CSV から生成)。場外判定・地形当たり判定はここへ委譲する。
 	std::unique_ptr<StageGrid> stage_;
