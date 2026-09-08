@@ -863,6 +863,7 @@ void Character::ResetForNewRound(const Vector3& spawnPos) {
 	pendingProjectileSpawns_.clear();
 	hasPendingThrow_ = false;
 	pendingThrowWeapon_.reset(); // 消費されなかった投げ武器が万一残っていても、ここで確実に手放す
+	equippedWeapon_ = std::make_unique<UnarmedWeapon>(); // 前ラウンドの武器を次ラウンドへ持ち越さない(素手に戻す)
 	damageFlashTimer_ = 0.0f;
 	slowMultiplier_ = 1.0f;
 	slowTimer_ = 0.0f;
