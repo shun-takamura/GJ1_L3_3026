@@ -33,6 +33,7 @@
 #include "Weapon/IceGun.h"
 #include "Weapon/FireGun.h"
 #include "Weapon/FireHazard.h"
+#include "GameApp.h"
 #include "Match/MatchResultRelay.h"
 #include "Effect/EffectManager.h"
 #include "Log.h"
@@ -360,6 +361,15 @@ void GameScene::Initialize() {
 	}
 #endif
 
+	// 状態異常アウトライン(炎=赤/氷=青の点滅)の ID パスを GameApp に配線する。
+	// GameApp が PostEffect の IdPass 内でこれを呼び、炎/氷のキャラのシルエットを idMaskRT へ描く。
+	GameApp::SetStatusOutlineDrawer([this](ID3D12GraphicsCommandList* /*cmd*/) -> bool {
+		bool drew = false;
+		if (player_ && player_->GetStatusOutlineId() != 0) { player_->DrawStatusOutlineIdPass(dxCore_); drew = true; }
+		if (enemy_ && enemy_->GetStatusOutlineId() != 0) { enemy_->DrawStatusOutlineIdPass(dxCore_); drew = true; }
+		return drew;
+	});
+
 	RefreshPortalEffects(); // 各ポータル位置に Warp エフェクトを常駐再生
 
 	// 最初のラウンドも、得点によるステージ切替と同じく3秒カウントダウンを挟んでから始める。
@@ -370,6 +380,7 @@ void GameScene::Finalize() {
 	if (s_activeForDebug_ == this) {
 		s_activeForDebug_ = nullptr;
 	}
+	GameApp::SetStatusOutlineDrawer(nullptr); // 状態異常アウトラインの配線を解除
 	for (EffectHandle h : portalEffectHandles_) {
 		EffectManager::GetInstance()->Stop(h);
 	}

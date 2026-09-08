@@ -1,5 +1,7 @@
 ﻿#include "GameApp.h"
 
+#include <chrono>
+
 #include "Scene/SceneManager.h"
 #include "Scene/SceneFactory.h"
 
@@ -158,6 +160,36 @@ void GameApp::RenderSceneWithPostEffect(RenderTexture* output) {
 	sceneManager->DrawTransition();   // シーンの上に覆いかぶさる（フィルタも掛かる）
 
 	postEffect_->EndSceneRender(cmd);
+
+	//---------------------------------------------
+	// 1.5 状態異常アウトライン用 ID パス。
+	//     炎/氷のキャラを idMaskRT へシルエット描画 → MaskedOutline フィルタが縁取る。
+	//     idMaskRT は R8_UINT で 1=炎 / 2=氷。状態のキャラが1体も居なければフィルタは OFF のまま。
+	//---------------------------------------------
+	if (postEffect_->maskedOutline) {
+		// 点滅用の時刻（steady_clock ベース、dt 非依存）。
+		static const auto s_outlineStart = std::chrono::steady_clock::now();
+		const float t = std::chrono::duration<float>(
+			std::chrono::steady_clock::now() - s_outlineStart).count();
+		postEffect_->maskedOutline->SetTime(t);
+
+		bool drewAny = false;
+		if (statusOutlineDrawer_) {
+			postEffect_->BeginIdPass(cmd);
+			// WriteID PSO は深度テストあり(書き込み無し)なので RTV+DSV を明示バインドする。
+			auto idRtv = postEffect_->GetIdMaskRT()->GetRTVHandle();
+			auto idDsv = dxCore_->GetDsvHandle();
+			cmd->OMSetRenderTargets(1, &idRtv, false, &idDsv);
+			D3D12_VIEWPORT idVp{ 0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h), 0.0f, 1.0f };
+			D3D12_RECT idSc{ 0, 0, static_cast<LONG>(w), static_cast<LONG>(h) };
+			cmd->RSSetViewports(1, &idVp);
+			cmd->RSSetScissorRects(1, &idSc);
+			drewAny = statusOutlineDrawer_(cmd);
+			postEffect_->EndIdPass(cmd);
+		}
+		postEffect_->maskedOutline->SetEnabled(drewAny);
+		postEffect_->maskedOutline->UpdateConstantBuffer();
+	}
 
 	//---------------------------------------------
 	// 2. 歪みパス。useDistortion なエフェクトプリミティブが歪みマップを distortionRT へ書き込む。
