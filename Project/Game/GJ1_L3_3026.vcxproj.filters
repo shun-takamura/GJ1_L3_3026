@@ -200,6 +200,9 @@
     <ClInclude Include="Match\MatchResultRelay.h">
       <Filter>Match</Filter>
     </ClInclude>
+    <ClInclude Include="Match\MatchScoreText.h">
+      <Filter>Match</Filter>
+    </ClInclude>
     <ClInclude Include="Stage\StageGrid.h">
       <Filter>Stage</Filter>
     </ClInclude>

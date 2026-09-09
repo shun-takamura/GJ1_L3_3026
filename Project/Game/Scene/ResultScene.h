@@ -24,6 +24,10 @@ public:
 private:
 	std::unique_ptr<Camera> camera_;
 
+	// 背景。カメラの正面奥に置いた Plane にタイトルと同じテクスチャを貼る
+	// (GameScene::background_ と同じ考え方。Scene 基底が PrimitiveInstance.h を include 済み)。
+	std::unique_ptr<PrimitiveInstance> background_;
+
 	// Initialize 時に MatchResultRelay::GetWinner() から作る表示用文字列("Player Wins!" 等)。
 	std::string winnerText_;
 };

@@ -266,6 +266,9 @@ private:
 	// 得点・10ポイント先取の勝敗判定(HP0 or 場外で+1、CheckKnockoutAndReset から呼ぶ)。
 	MatchRule matchRule_;
 
+	// BGM が今ピンチ曲(PinchBGM)に切り替わっているか。相手が王手になった瞬間に一度だけ差し替える。
+	bool bgmPinch_ = false;
+
 	//====================
 	// ラウンドの進行状態(Battle → RoundEnd → Countdown → Battle …)
 	//====================

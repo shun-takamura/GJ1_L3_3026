@@ -173,6 +173,7 @@
     <ClInclude Include="Save\SaveData.h" />
     <ClInclude Include="Match\MatchRule.h" />
     <ClInclude Include="Match\MatchResultRelay.h" />
+    <ClInclude Include="Match\MatchScoreText.h" />
     <ClInclude Include="Stage\StageGrid.h" />
     <ClInclude Include="Stage\StageCatalog.h" />
     <ClInclude Include="Stage\InstancedBlockRenderer.h" />
