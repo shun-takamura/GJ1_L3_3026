@@ -20,8 +20,8 @@ sm->LoadFile("bgm_stage1", "Resources/Sounds/stage1.wav");
 sm->LoadFile("se_shot",    "Resources/Sounds/shot.wav");
 
 // --- 再生 ---
-sm->Play2DSound("bgm_stage1");
-sm->Play2DSound("se_shot");
+sm->Play2DSoundLooped("bgm_stage1"); // BGM はループ。曲が終わっても鳴り続ける
+sm->Play2DSound("se_shot");          // 単発。1 回鳴って終わり
 
 // --- 停止 ---
 sm->Stop2DSound("bgm_stage1");
@@ -72,8 +72,13 @@ sm->Stop3DSound(handle);
 
 | | 用途 |
 |---|---|
-| `Play2DSound` | BGM、UI 音、プレイヤー自身の音など、定位が不要なもの |
+| `Play2DSound` | UI 音、プレイヤー自身の音など、定位が不要で 1 回鳴れば済むもの |
+| `Play2DSoundLooped` | BGM。バッファ全体を無限ループ。止めるのは `Stop2DSound(name)` |
 | `Play3DSound` | 敵の足音、遠くの爆発、環境音など、位置が意味を持つもの |
+
+BGM の切り替え（例: 通常 → ピンチ）は、`Play2DSoundLooped` を呼ぶと同名を一度止めてから鳴らし直すので、
+「今どっちの曲か」のフラグを持って**変化したフレームだけ**呼ぶ（毎フレーム呼ぶと頭出しが繰り返されて途切れる）。
+GameScene は `bgmPinch_` で `matchRule_.GetEnemyPoints() >= kPointsToWin-1`（相手が王手）を見て GameBGM↔PinchBGM を切り替えている。
 
 ---
 

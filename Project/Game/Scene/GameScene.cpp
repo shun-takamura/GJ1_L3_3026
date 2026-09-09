@@ -36,6 +36,7 @@
 #include "Sound/SoundManager.h"
 #include "GameApp.h"
 #include "Match/MatchResultRelay.h"
+#include "Match/MatchScoreText.h"
 #include "Save/SaveData.h"
 #include "Effect/EffectManager.h"
 #include "Log.h"
@@ -323,11 +324,11 @@ void GameScene::Initialize() {
 	// 見た目の仮 Box をスキニング付きアニメモデルに差し替える(アセットが無ければ Box のまま)。
 	// プレイヤー=青 / 敵=赤。被弾中は赤・氷結中は水色に上書きされる。
 	// アトラクト(デモ)は「敵 AI 同士の対戦」なので、両者とも敵の赤にする。
-	const Vector4 kEnemyColor{ 1.0f, 0.32f, 0.28f, 1.0f };
+	// 色の定義元は MatchScoreText(得点表示も同じ色を使うため一本化している)。
 	player_->SetupAnimatedModel(object3DManager_, skinningComputeManager_, dxCore_, srvManager_,
-		attractMode_ ? kEnemyColor : Vector4{ 0.28f, 0.55f, 1.0f, 1.0f });
+		attractMode_ ? MatchScoreText::kEnemyColor : MatchScoreText::kPlayerColor);
 	enemy_->SetupAnimatedModel(object3DManager_, skinningComputeManager_, dxCore_, srvManager_,
-		kEnemyColor);
+		MatchScoreText::kEnemyColor);
 
 	// 敵 AI と学習モデル。GameScene は Think() の結果を Character へ渡すだけ。
 	enemyBrain_ = std::make_unique<EnemyBrain>();
@@ -524,6 +525,7 @@ void GameScene::Initialize() {
 			auto* sm = SoundManager::GetInstance();
 			sm->LoadFile("GameBGM", "Resources/Sounds/Game/GameBGM.mp3");
 			sm->LoadFile("TitleBGM", "Resources/Sounds/Title/TitleBGM.mp3"); // アトラクト(旧 TitleScene)用 BGM
+			sm->LoadFile("PinchBGM", "Resources/Sounds/Pinch/Pinch_Alarm.mp3"); // 相手が王手(あと1点で勝利)のとき GameBGM から差し替える
 			// 素手(パンチのバリエーション。UnarmedWeapon.cpp の kPunchSoundNames と対応させる)
 			sm->LoadFile("Punch_Big", "Resources/Sounds/SE/BareHands/Punch_Big.mp3");
 			sm->LoadFile("Punch_Heavy1", "Resources/Sounds/SE/BareHands/Punch_Heavy1.mp3");
@@ -553,7 +555,9 @@ void GameScene::Initialize() {
 			sm->LoadFile("FireHazard_Ignite", "Resources/Sounds/SE/Fire/FireHazard_Ignite.mp3");
 		}
 		// アトラクト(タイトル)は旧 TitleScene::Initialize と同じ TitleBGM を鳴らす。
-		SoundManager::GetInstance()->Play2DSound(attractMode_ ? "TitleBGM" : "GameBGM");
+		// BGM はループ再生(通常の Play2DSound は曲が終わると止まる)。
+		bgmPinch_ = false;
+		SoundManager::GetInstance()->Play2DSoundLooped(attractMode_ ? "TitleBGM" : "GameBGM");
 	}
 
 	// 状態異常アウトライン(炎=赤/氷=青の点滅)の ID パスを GameApp に配線する。
@@ -576,7 +580,9 @@ void GameScene::Finalize() {
 		s_activeForDebug_ = nullptr;
 	}
 	GameApp::SetStatusOutlineDrawer(nullptr); // 状態異常アウトラインの配線を解除
-	SoundManager::GetInstance()->Stop2DSound(attractMode_ ? "TitleBGM" : "GameBGM");
+	SoundManager::GetInstance()->Stop2DSound("TitleBGM");
+	SoundManager::GetInstance()->Stop2DSound("GameBGM");
+	SoundManager::GetInstance()->Stop2DSound("PinchBGM");
 	StopRumble(); // シーンを抜けるときにコントローラー振動を鳴らしっぱなしにしない
 	for (EffectHandle h : portalEffectHandles_) {
 	EffectManager::GetInstance()->Stop(h);
@@ -907,6 +913,16 @@ void GameScene::Update() {
 	// 呼び忘れると3D音の定位が固まり、再生終了の検知も走らない)。
 	SoundManager::GetInstance()->UpdateListener(camera_.get());
 	SoundManager::GetInstance()->Update();
+
+	// 本編で相手が王手(あと1点で勝利 = 9点)になったら BGM を GameBGM → PinchBGM に差し替える
+	// (bgmPinch_ で1回だけ切り替える。アトラクト/チュートリアルは対象外)。
+	if (!attractMode_ && !tutorialMode_) {
+		const bool pinch = matchRule_.GetEnemyPoints() >= MatchRule::kPointsToWin - 1;
+		if (pinch != bgmPinch_) {
+			bgmPinch_ = pinch;
+			SoundManager::GetInstance()->Play2DSoundLooped(pinch ? "PinchBGM" : "GameBGM");
+		}
+	}
 
 	if (titleLogo_) {
 		titleLogo_->Update();
@@ -2008,6 +2024,14 @@ void GameScene::Draw() {
 			const float w = static_cast<float>(WindowsApplication::kClientWidth);
 			const float ww = tr->MeasureWidth(winnerText, 2.0f);
 			tr->DrawText(winnerText, { (w - ww) * 0.5f, 260.0f }, 2.0f);
+
+			// バナーの下に、このラウンドぶんを加算したあとの取得ラウンド数を出す
+			// (加点は RoundEnd へ移る前に matchRule_ へ入っている)。
+			// 数字はキャラクターモデルと同じ色。レイアウトは ResultScene と揃えてある。
+			MatchScoreText::DrawCenteredScore(tr,
+				matchRule_.GetPlayerPoints(), matchRule_.GetEnemyPoints(),
+				w * 0.5f, 350.0f, 2.4f);
+			MatchScoreText::DrawCenteredPair(tr, "PLAYER", "ENEMY", w * 0.5f, 430.0f, 0.8f);
 		}
 
 		// アトラクト(デモ)モード = タイトル画面。本編への入り方を画面下中央に大きく出す。
