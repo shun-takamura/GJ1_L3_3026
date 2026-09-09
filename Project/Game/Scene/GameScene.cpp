@@ -524,6 +524,7 @@ void GameScene::Initialize() {
 			auto* sm = SoundManager::GetInstance();
 			sm->LoadFile("GameBGM", "Resources/Sounds/Game/GameBGM.mp3");
 			sm->LoadFile("TitleBGM", "Resources/Sounds/Title/TitleBGM.mp3"); // アトラクト(旧 TitleScene)用 BGM
+			sm->LoadFile("KO", "Resources/Sounds/SE/KO/K.O..mp3"); // プレイヤー/敵が撃破された時の SE
 			// 素手(パンチのバリエーション。UnarmedWeapon.cpp の kPunchSoundNames と対応させる)
 			sm->LoadFile("Punch_Big", "Resources/Sounds/SE/BareHands/Punch_Big.mp3");
 			sm->LoadFile("Punch_Heavy1", "Resources/Sounds/SE/BareHands/Punch_Heavy1.mp3");
@@ -1509,6 +1510,7 @@ bool GameScene::CheckKnockoutAndReset(Character& target, MatchRule::Winner other
 	// には ResolveAttack/ResolveExplosion のどちらも通らず、今まで一切エフェクトが
 	// 無かったため)。武器やHP0/場外の別を問わず、撃破という結果そのものに紐付ける。
 	EffectManager::GetInstance()->Play("Block_Exprosion", target.GetPosition());
+	SoundManager::GetInstance()->Play3DSound("KO", target.GetPosition());
 
 	const bool matchOver = matchRule_.AddPoint(otherSide);
 	if (matchOver) {
