@@ -65,8 +65,9 @@ private:
 	bool attractMode_ = false;
 
 	/// <summary>起動時 / ラウンド跨ぎで読み込むステージ index を決める。
-	/// アトラクト時は名前に "Sample" を含む最初のステージ(無ければ 0)、通常時はランダム抽選。</summary>
-	int PickStartStageIndex() const;
+	/// アトラクト時は名前に "Sample" を含む最初のステージ(無ければ 0)、
+	/// 通常時は StageCatalog のシャッフルバッグ抽選(Sample 除外・一巡まで重複なし)。</summary>
+	int PickStartStageIndex();
 
 	/// <summary>
 	/// brain に self/target・ステージ・最寄り pickup・飛来脅威を詰めた BrainContext を渡して
@@ -134,6 +135,48 @@ private:
 
 	// Stage Select ImGui ウィンドウ（プロセス中1回だけ登録）から現在の GameScene を触るための口。
 	static GameScene* s_activeForDebug_;
+
+	//====================
+	// コントローラー振動（XInput）
+	// left  = 低周波の重い振動 / right = 高周波の細かい振動。0〜65535。
+	// TriggerRumble で (左右の強さ, 秒数) をセットし、毎フレーム UpdateRumble が
+	// 残り時間を減らして 0 で StopVibration する。attractMode_ 中は鳴らさない。
+	//====================
+	static constexpr unsigned short kHitMotorLeft = 14000;   // 被弾：弱め（左右対称）
+	static constexpr unsigned short kHitMotorRight = 22000;
+	static constexpr float kHitRumbleSeconds = 0.18f;
+	static constexpr unsigned short kExplosionMotorMid = 40000; // 爆発：中くらい（爆発側 / 近距離）
+	static constexpr unsigned short kExplosionMotorLow = 16000; // 爆発：弱め（爆発と反対側で振り切ったとき）
+	static constexpr float kExplosionRumbleSeconds = 0.35f;
+	// 爆発中心とプレイヤーの X 距離がこれ以上なら左右のパンを振り切る（調整用）。
+	static constexpr float kRumblePanDistance = 6.0f;
+
+	float rumbleRemaining_ = 0.0f;      // 振動の残り秒（0以下で停止）
+	unsigned short rumbleLeft_ = 0;     // 現在鳴らしている左モーター強さ
+	unsigned short rumbleRight_ = 0;    // 現在鳴らしている右モーター強さ
+	float prevPlayerHP_ = 0.0f;         // 前フレームのプレイヤー HP（減っていたら被弾とみなす）
+
+	/// <summary>
+	/// 左右モーターの強さと継続秒を指定して振動を要求する。再生中の振動より弱い要求は
+	/// 強さを上書きせず継続時間だけ必要に応じて延長する（強い振動が弱い振動に負けない）。
+	/// attractMode_（プレイヤーが AI のデモ）では何もしない。
+	/// </summary>
+	void TriggerRumble(unsigned short left, unsigned short right, float seconds);
+
+	/// <summary>
+	/// 爆発中心 center とプレイヤーの X 座標差から左右モーターの強さを決めて TriggerRumble する。
+	/// 爆発側のモーターは常に中、反対側は距離に応じて中→弱へ落ちる（真上・真下・至近は両方中）。
+	/// </summary>
+	void TriggerExplosionRumble(const Vector3& center);
+
+	/// <summary>振動の残り時間を進め、尽きたら StopVibration する。毎フレーム Update から呼ぶ。</summary>
+	void UpdateRumble(float dt);
+
+	/// <summary>
+	/// 振動を即時停止して状態をクリアする（安全機能）。
+	/// ステージ切り替え・ゲーム終了（シーン遷移）・Finalize で呼び、振動が鳴りっぱなしにならないようにする。
+	/// </summary>
+	void StopRumble();
 
 	std::unique_ptr<Camera> camera_;
 

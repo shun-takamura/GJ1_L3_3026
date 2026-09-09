@@ -172,7 +172,7 @@ namespace {
 
 GameScene* GameScene::s_activeForDebug_ = nullptr;
 
-int GameScene::PickStartStageIndex() const {
+int GameScene::PickStartStageIndex() {
 	if (attractMode_) {
 		// アトラクト(デモ)は常に Sample ステージ。名前に "Sample" を含む最初のものを使う。
 		for (int i = 0; i < stageCatalog_.Count(); ++i) {
@@ -182,7 +182,9 @@ int GameScene::PickStartStageIndex() const {
 		}
 		return 0; // 見つからなければ先頭
 	}
-	return stageCatalog_.PickRandomIndex();
+	// 本編は Sample を除いたシャッフルバッグ抽選。1 セット(どちらか 10 点先取)が終わるまで
+	// 同じステージを引かない。バッグの仕切り直しは ResetBattleRotation()（セット決着時に呼ぶ）。
+	return stageCatalog_.PickNextBattleIndex();
 }
 
 void GameScene::Initialize() {
@@ -264,6 +266,7 @@ void GameScene::Initialize() {
 	player_ = std::make_unique<Character>();
 	player_->Initialize(camera_.get(), "Player", playerSpawn_);
 	player_->SetStage(stage_.get());
+	prevPlayerHP_ = player_->GetHP(); // 被弾振動の基準（初期化直後は満タン）
 #ifdef USE_IMGUI
 	player_->SetWeaponRenderContext(object3DManager_, dxCore_);
 #endif // USE_IMGUI
@@ -443,6 +446,7 @@ void GameScene::Finalize() {
 		s_activeForDebug_ = nullptr;
 	}
 	GameApp::SetStatusOutlineDrawer(nullptr); // 状態異常アウトラインの配線を解除
+	StopRumble(); // シーンを抜けるときにコントローラー振動を鳴らしっぱなしにしない
 	for (EffectHandle h : portalEffectHandles_) {
 		EffectManager::GetInstance()->Stop(h);
 	}
@@ -484,8 +488,12 @@ void GameScene::LoadStage(int index) {
 	const auto& enemySpawns = stage_->GetEnemySpawnsWorld();
 	enemySpawn_ = !enemySpawns.empty() ? enemySpawns.front() : Vector3{ 3.0f, 2.0f, 0.0f };
 
+	// 安全機能：ステージ切り替えでコントローラー振動を止める（切替直前の被弾/爆発の振動を持ち越さない）。
+	StopRumble();
+
 	// プレイヤー・敵を初期位置へ戻す（HP・速度・状態異常もクリアされる）。
 	if (player_) player_->ResetForNewRound(playerSpawn_);
+	if (player_) prevPlayerHP_ = player_->GetHP(); // 被弾振動の基準を新ステージの満タン HP に合わせる
 	if (enemy_)  enemy_->ResetForNewRound(enemySpawn_);
 	if (enemyBrain_) enemyBrain_->ResetForNewRound();
 	if (playerBrain_) playerBrain_->ResetForNewRound();
@@ -600,6 +608,10 @@ void GameScene::UpdateRoundEnd(float dt) {
 		// LoadStage を通らない経路なので、ここでも明示的に StopAll() しないと最後の一撃の
 		// 撃破エフェクトが Result シーンまで残ったまま持ち越されてしまう。
 		EffectManager::GetInstance()->StopAll();
+		// 安全機能：ゲーム終了（Result へ遷移）でコントローラー振動を止める。
+		StopRumble();
+		// このセットは決着。次セットのステージ抽選が新しい一巡から始まるようバッグを空にする。
+		stageCatalog_.ResetBattleRotation();
 		MatchResultRelay::SetResult(matchRule_.GetWinner(), matchRule_.GetPlayerPoints(), matchRule_.GetEnemyPoints());
 		SceneManager::GetInstance()->ChangeScene("Result", TransitionType::Fade);
 	} else {
@@ -608,6 +620,8 @@ void GameScene::UpdateRoundEnd(float dt) {
 		if (roundEndMatchOver_) {
 			EffectManager::GetInstance()->StopAll();
 			matchRule_.Reset();
+			// アトラクトも次セットは新しい一巡から。
+			stageCatalog_.ResetBattleRotation();
 		}
 		// 次のラウンドのステージ。アトラクト時は Sample 固定、通常時はランダム抽選
 		// (実際の読み込みと地形の作り直しは次フレーム先頭の pendingStageLoad_ 解決で行う。
@@ -717,6 +731,7 @@ void GameScene::UpdateStageGimmicks(float dt) {
 	for (const StageGrid::BombExplosion& ex : stage_->ConsumeBombExplosions()) {
 		AddDebugFlash(ex.center, ex.radius, Vector4{ 1.0f, 0.4f, 0.05f, 1.0f }, 0.5f);
 		EffectManager::GetInstance()->Play("Block_Exprosion", ex.center);
+		TriggerExplosionRumble(ex.center);
 		Log("爆弾ブロックが起爆\n");
 		applyBlast(*player_, ex);
 		applyBlast(*enemy_, ex);
@@ -765,6 +780,9 @@ void GameScene::Update() {
 	// ゲームロジックは Player グループの時間で進める。
 	// ヒットストップやスローを入れるときにここが効く
 	const float dt = GetScaledDeltaTime(TimeGroup::Player);
+
+	// コントローラー振動の減衰。ヒットストップ中に振動が固まらないよう unscaled な実 delta で進める。
+	UpdateRumble(dxCore_ ? dxCore_->GetDeltaTime() : dt);
 
 	//===================================
 	// 入力 → プレイヤーの意図(左右移動・ジャンプ・しゃがみ・攻撃・照準・投げ捨て)への変換
@@ -1049,6 +1067,20 @@ void GameScene::UpdateBattle(float dt, const CharacterInput& playerInput) {
 	UpdateWeaponSpawner(dt);
 
 	//===================================
+	// 被弾でコントローラーを弱く振動させる。
+	// ダメージ源（殴り・銃弾・爆風・炎・トゲ）を問わず、プレイヤーの HP が前フレームより
+	// 減っていたら被弾とみなす。爆発の中振動が来ているフレームは弱い被弾振動に上書きされない
+	// （TriggerRumble 側で弱い要求は強さを据え置く）。
+	//===================================
+	if (!attractMode_ && player_) {
+		const float hp = player_->GetHP();
+		if (hp < prevPlayerHP_ - 0.01f) {
+			TriggerRumble(kHitMotorLeft, kHitMotorRight, kHitRumbleSeconds);
+		}
+		prevPlayerHP_ = hp;
+	}
+
+	//===================================
 	// 場外・HP0判定 → 得点(MatchRule)判定
 	// 決着していなければ次のラウンド用にランダムなステージ切替を予約し(CheckKnockoutAndReset 内)、
 	// 決着していれば Result シーンへ遷移する。
@@ -1204,9 +1236,14 @@ void GameScene::UpdateDebugFlashes(float dt) {
 }
 
 void GameScene::DrawDebugAids() {
+#ifdef _DEBUG
+	// 攻撃判定(爆発範囲・殴り範囲・弾ヒットなど)の可視化ワイヤーフレーム。
+	// あくまで開発中の当たり確認用なので Release/Development には出さない。
+	// 下の照準レイ/着弾点(マウスカーソル方向)は仕様上の常時表示なので残す。
 	for (const auto& flash : debugFlashes_) {
 		DebugDraw::Sphere(flash.position, flash.radius, flash.color, 12);
 	}
+#endif // _DEBUG
 
 	// プレイヤーの照準方向を常時表示する(シアンのレイ)。マウス/右スティックの向きが
 	// 意図通りワールドに反映されているかを目視確認するためのデバッグ表示。
@@ -1350,6 +1387,66 @@ void GameScene::UpdateFlyingObjects(float dt) {
 		flyingObjects_.end());
 }
 
+void GameScene::TriggerRumble(unsigned short left, unsigned short right, float seconds) {
+	if (attractMode_) {
+		return; // デモ中はプレイヤーが AI なので鳴らさない
+	}
+	// 再生中の振動より弱い要求では強さを据え置き、時間だけ必要に応じて延長する。
+	const bool weakerThanCurrent =
+		rumbleRemaining_ > 0.0f && left <= rumbleLeft_ && right <= rumbleRight_;
+	if (!weakerThanCurrent) {
+		rumbleLeft_ = left;
+		rumbleRight_ = right;
+	}
+	rumbleRemaining_ = (std::max)(rumbleRemaining_, seconds);
+	if (auto* pad = input_ ? input_->GetController() : nullptr) {
+		pad->SetVibration(rumbleLeft_, rumbleRight_);
+	}
+}
+
+void GameScene::TriggerExplosionRumble(const Vector3& center) {
+	if (attractMode_ || !player_) {
+		return;
+	}
+	// 爆発がプレイヤーの左右どちら側か（+ = 右）。真上・真下なら dx≈0。
+	const float dx = center.x - player_->GetPosition().x;
+	// |dx| が大きいほど「反対側」のモーターを弱める（0..1 に正規化）。
+	const float t = (std::min)(std::fabs(dx) / kRumblePanDistance, 1.0f);
+	const auto lerpMotor = [](unsigned short a, unsigned short b, float s) -> unsigned short {
+		return static_cast<unsigned short>(a + (b - a) * s);
+	};
+	const unsigned short faded = lerpMotor(kExplosionMotorMid, kExplosionMotorLow, t);
+	unsigned short left = kExplosionMotorMid;
+	unsigned short right = kExplosionMotorMid;
+	if (dx > 0.0f) {
+		right = kExplosionMotorMid; // 爆発は右側 → 右モーターは中のまま
+		left = faded;               // 左モーターは距離に応じて中→弱
+	} else if (dx < 0.0f) {
+		left = kExplosionMotorMid;
+		right = faded;
+	}
+	TriggerRumble(left, right, kExplosionRumbleSeconds);
+}
+
+void GameScene::UpdateRumble(float dt) {
+	if (rumbleRemaining_ <= 0.0f) {
+		return;
+	}
+	rumbleRemaining_ -= dt;
+	if (rumbleRemaining_ <= 0.0f) {
+		StopRumble();
+	}
+}
+
+void GameScene::StopRumble() {
+	rumbleRemaining_ = 0.0f;
+	rumbleLeft_ = 0;
+	rumbleRight_ = 0;
+	if (auto* pad = input_ ? input_->GetController() : nullptr) {
+		pad->StopVibration();
+	}
+}
+
 void GameScene::ResolveExplosion(const ArcingProjectile& obj) {
 	const Vector3 center = obj.GetPosition();
 	const float blastRadius = obj.GetBlastRadius();
@@ -1364,6 +1461,7 @@ void GameScene::ResolveExplosion(const ArcingProjectile& obj) {
 	// 今まではデバッグ用ワイヤーフレームしか出ておらず、武器の爆風による撃破が
 	// 格闘の meller に対して見た目の演出だけ無いのは不自然だったための追加。
 	EffectManager::GetInstance()->Play("Block_Exprosion", center);
+	TriggerExplosionRumble(center);
 
 	// 地形は「着弾点だけ」ではなく爆風半径ぶんまとめて削る(通常弾の着弾チップ削りより
 	// 広い範囲。直撃/地形当たり/寿命切れのどれで死んだかは問わない)。
