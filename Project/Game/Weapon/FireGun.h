@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include "Weapon.h"
 
 /// <summary>
@@ -19,6 +21,8 @@
 /// </summary>
 class FireGun : public Weapon {
 public:
+	~FireGun() override;
+
 	bool TryRangedAttack(float dt, bool triggered, bool held, const Vector3& ownerPos,
 		float aimDirX, float aimDirY, std::vector<ProjectileSpawnRequest>& outSpawns) override;
 
@@ -55,4 +59,11 @@ private:
 
 	int ammo_ = kStartingAmmo;
 	float cooldownTimer_ = 0.0f;
+
+	// 発射音(SE/Flamethrower/FireGun_Fire.mp3、約3.47秒の「ゴウッ」という炎の噴射音)は
+	// kCooldown(0.6秒)よりずっと長い。ハンドルを覚えておき、次に撃った瞬間に前回ぶんが
+	// まだ鳴っていても明示的に止めてから鳴らし直す ── これをしないと連射時に発射音が
+	// 何重にも重なって鳴り続け、実際に撃つのをやめた後もしばらく鳴り止まないように聞こえる
+	// (2026-09-09 ユーザー報告「火炎銃のSEが停止しない」の原因。GrenadeLauncher.h も同様)。
+	uint32_t fireSoundHandle_ = 0;
 };

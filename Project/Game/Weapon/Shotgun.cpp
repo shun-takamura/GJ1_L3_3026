@@ -2,6 +2,8 @@
 
 #include <cmath>
 
+#include "Sound/SoundManager.h"
+
 #ifdef USE_IMGUI
 #include "imgui.h"
 #endif
@@ -19,10 +21,16 @@ bool Shotgun::TryRangedAttack(float dt, bool triggered, bool held, const Vector3
 		cooldownTimer_ -= dt;
 	}
 	if (!triggered || cooldownTimer_ > 0.0f || ammo_ <= 0) {
+		if (triggered && cooldownTimer_ <= 0.0f && ammo_ <= 0) {
+			SoundManager::GetInstance()->Play3DSound("Empty", ownerPos);
+		}
 		return false;
 	}
 	cooldownTimer_ = kCooldown;
 	--ammo_;
+	// 発射音とポンプアクション(次弾装填)を重ねて鳴らす。
+	SoundManager::GetInstance()->Play3DSound("Shotgun_Fire", ownerPos);
+	SoundManager::GetInstance()->Play3DSound("Shotgun_Pump", ownerPos);
 
 	// 照準方向を角度(ラジアン)に変換し、その前後 kSpreadAngleRad の範囲へ
 	// kPelletCount 発を均等に振り分ける(Vector3 に回転を表す演算子が無いため、

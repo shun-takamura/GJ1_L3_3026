@@ -1,5 +1,7 @@
 #include "SniperRifle.h"
 
+#include "Sound/SoundManager.h"
+
 #ifdef USE_IMGUI
 #include "imgui.h"
 #endif
@@ -16,10 +18,16 @@ bool SniperRifle::TryRangedAttack(float dt, bool triggered, bool held, const Vec
 		cooldownTimer_ -= dt;
 	}
 	if (!triggered || cooldownTimer_ > 0.0f || ammo_ <= 0) {
+		if (triggered && cooldownTimer_ <= 0.0f && ammo_ <= 0) {
+			SoundManager::GetInstance()->Play3DSound("Empty", ownerPos);
+		}
 		return false;
 	}
 	cooldownTimer_ = kCooldown;
 	--ammo_;
+	// 発射音とボルトアクション(排莢/次弾装填)を重ねて鳴らす(専用の「構え」状態は無いため)。
+	SoundManager::GetInstance()->Play3DSound("SniperRifle_Fire", ownerPos);
+	SoundManager::GetInstance()->Play3DSound("SniperRifle_Bolt", ownerPos);
 
 	ProjectileSpawnRequest spawn;
 	spawn.origin = {

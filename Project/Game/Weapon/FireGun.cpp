@@ -1,8 +1,17 @@
 #include "FireGun.h"
 
+#include "Sound/SoundManager.h"
+
 #ifdef USE_IMGUI
 #include "imgui.h"
 #endif
+
+FireGun::~FireGun() {
+	// 発射音が鳴っている途中で武器が手放された場合、鳴りっぱなしにしない。
+	if (fireSoundHandle_ != 0) {
+		SoundManager::GetInstance()->Stop3DSound(fireSoundHandle_);
+	}
+}
 
 /// <summary>
 /// クールダウン・残弾を見て、撃てるなら弾1発ぶんの ProjectileSpawnRequest を組み立てて
@@ -18,10 +27,19 @@ bool FireGun::TryRangedAttack(float dt, bool triggered, bool held, const Vector3
 		cooldownTimer_ -= dt;
 	}
 	if (!triggered || cooldownTimer_ > 0.0f || ammo_ <= 0) {
+		if (triggered && cooldownTimer_ <= 0.0f && ammo_ <= 0) {
+			SoundManager::GetInstance()->Play3DSound("Empty", ownerPos);
+		}
 		return false;
 	}
 	cooldownTimer_ = kCooldown;
 	--ammo_;
+	// 発射音(約3.47秒)はクールダウン(0.6秒)よりずっと長いため、前回ぶんがまだ鳴って
+	// いれば明示的に止めてから鳴らし直す(でないと連射時に何重にも重なって鳴り続ける)。
+	if (fireSoundHandle_ != 0) {
+		SoundManager::GetInstance()->Stop3DSound(fireSoundHandle_);
+	}
+	fireSoundHandle_ = SoundManager::GetInstance()->Play3DSound("FireGun_Fire", ownerPos);
 
 	ProjectileSpawnRequest spawn;
 	spawn.origin = {

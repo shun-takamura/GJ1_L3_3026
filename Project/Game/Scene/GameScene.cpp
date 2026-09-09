@@ -33,6 +33,7 @@
 #include "Weapon/IceGun.h"
 #include "Weapon/FireGun.h"
 #include "Weapon/FireHazard.h"
+#include "Sound/SoundManager.h"
 #include "GameApp.h"
 #include "Match/MatchResultRelay.h"
 #include "Effect/EffectManager.h"
@@ -168,6 +169,36 @@ namespace {
 		const int pick = enabledIndices[RandomGenerator::Instance().NextInt(0, enabledCount - 1)];
 		return g_weaponSpawnPool[pick].factory();
 	}
+
+	/// <summary>WeaponPickup を置ける床のあるマス(「自分のマスは空き、真下は地形」)を
+	/// stage 全体から集め、その中からランダムに1つを *outPos へ書き出す。UpdateWeaponSpawner
+	/// (ランダム武器の定期スポーン)と SpawnSpecificWeaponPickup(デバッグの特定武器スポーン)
+	/// で候補地探索ロジックを重複させないための共通ヘルパー。置ける場所が1つも無ければ
+	/// false を返す(足場のあるステージでは通常起きないが念のため)。</summary>
+	// SE/BareHands/ に置いてある素手パンチのバリエーションのうち、実際に使うものだけを絞って
+	// ある(ユーザー指定)。ResolveAttack が「実際に何かに当たった(敵 or 壊れる床)ときだけ」
+	// 鳴らす ── 振っただけで外れたときは鳴らさない。
+	const char* const kPunchSoundNames[] = {
+		"Punch_Big", "Punch_Heavy1", "Punch_Light1", "Punch_Light2",
+	};
+	constexpr int kPunchSoundCount = sizeof(kPunchSoundNames) / sizeof(kPunchSoundNames[0]);
+
+	bool PickWeaponSpawnPosition(const StageGrid& stage, Vector3* outPos) {
+		std::vector<Vector3> candidates;
+		for (int cy = 0; cy < StageGrid::kRows - 1; ++cy) {
+			for (int cx = 0; cx < StageGrid::kCols; ++cx) {
+				if (!stage.IsSolidCell(cx, cy) && stage.IsSolidCell(cx, cy + 1)) {
+					candidates.push_back(stage.CellToWorldCenter(cx, cy));
+				}
+			}
+		}
+		if (candidates.empty()) {
+			return false;
+		}
+		auto& rng = RandomGenerator::Instance();
+		*outPos = candidates[static_cast<size_t>(rng.NextInt(0, static_cast<int>(candidates.size()) - 1))];
+		return true;
+	}
 }
 
 GameScene* GameScene::s_activeForDebug_ = nullptr;
@@ -286,72 +317,88 @@ void GameScene::Initialize() {
 	if (!weaponTuningWindowRegistered) {
 		weaponTuningWindowRegistered = true;
 		ImGuiManager::Instance().AddCallbackWindow("Weapon Tuning", []() {
-			// デバッグ用: ランダムスポーン(CreateRandomWeapon)の抽選候補から
-			// 武器を一時的に除外できるチェックボックス群。ここで触るのは
-			// g_weaponSpawnPool[i].enabled そのもの(CreateRandomWeapon と共有するテーブル。
-			// 上のコメント参照)なので、チェックを外した武器は次のランダムスポーンから
-			// 即座に対象外になる(既にステージに出ている物・拾得済みの物は消えない)。
-			if (ImGui::CollapsingHeader("Spawn Pool", ImGuiTreeNodeFlags_DefaultOpen)) {
-				for (int i = 0; i < kWeaponSpawnPoolCount; ++i) {
-					ImGui::PushID(i);
-					ImGui::Checkbox(g_weaponSpawnPool[i].name, &g_weaponSpawnPool[i].enabled);
-					ImGui::PopID();
+			// 「どの武器をランダム抽選に混ぜるか」の一覧(Spawn Pool)と「各武器のパラメータ調整」
+			// (Parameters)は別の関心事なので、CollapsingHeader を縦に並べるのではなく
+			// ImGui::BeginTabBar でタブ分けする(スクロールが長くなりがちだったのを解消)。
+			if (ImGui::BeginTabBar("WeaponTuningTabs")) {
+				if (ImGui::BeginTabItem("Spawn Pool")) {
+					// チェックを外すと CreateRandomWeapon の抽選候補から外れる(g_weaponSpawnPool[i].enabled
+					// を直接触る。CreateRandomWeapon と共有するテーブル。既にステージに出ている物・
+					// 拾得済みの物は消えない)。Spawn ボタンは enabled 状態に関係なく、その武器を
+					// 1つだけ即座にステージへ湧かせる(デバッグ用。GameScene::SpawnSpecificWeaponPickup)。
+					ImGui::TextUnformatted("Checkbox: ランダムスポーンの抽選に含める / Spawn: その場に1つ即時生成");
+					ImGui::Separator();
+					GameScene* self = GameScene::s_activeForDebug_;
+					for (int i = 0; i < kWeaponSpawnPoolCount; ++i) {
+						ImGui::PushID(i);
+						ImGui::Checkbox(g_weaponSpawnPool[i].name, &g_weaponSpawnPool[i].enabled);
+						ImGui::SameLine();
+						if (ImGui::Button("Spawn") && self) {
+							self->SpawnSpecificWeaponPickup(i);
+						}
+						ImGui::PopID();
+					}
+					ImGui::EndTabItem();
 				}
-			}
-			if (ImGui::CollapsingHeader("Pistol")) {
-				ImGui::PushID("Pistol");
-				Pistol::DrawImGuiTuning();
-				ImGui::PopID();
-			}
-			if (ImGui::CollapsingHeader("AssaultRifle")) {
-				ImGui::PushID("AssaultRifle");
-				AssaultRifle::DrawImGuiTuning();
-				ImGui::PopID();
-			}
-			if (ImGui::CollapsingHeader("Shotgun")) {
-				ImGui::PushID("Shotgun");
-				Shotgun::DrawImGuiTuning();
-				ImGui::PopID();
-			}
-			if (ImGui::CollapsingHeader("Blaster")) {
-				ImGui::PushID("Blaster");
-				Blaster::DrawImGuiTuning();
-				ImGui::PopID();
-			}
-			if (ImGui::CollapsingHeader("GrenadeLauncher")) {
-				ImGui::PushID("GrenadeLauncher");
-				GrenadeLauncher::DrawImGuiTuning();
-				ImGui::PopID();
-			}
-			if (ImGui::CollapsingHeader("SniperRifle")) {
-				ImGui::PushID("SniperRifle");
-				SniperRifle::DrawImGuiTuning();
-				ImGui::PopID();
-			}
-			if (ImGui::CollapsingHeader("Minigun")) {
-				ImGui::PushID("Minigun");
-				Minigun::DrawImGuiTuning();
-				ImGui::PopID();
-			}
-			if (ImGui::CollapsingHeader("HandCannon")) {
-				ImGui::PushID("HandCannon");
-				HandCannon::DrawImGuiTuning();
-				ImGui::PopID();
-			}
-			if (ImGui::CollapsingHeader("RicochetRifle")) {
-				ImGui::PushID("RicochetRifle");
-				RicochetRifle::DrawImGuiTuning();
-				ImGui::PopID();
-			}
-			if (ImGui::CollapsingHeader("IceGun")) {
-				ImGui::PushID("IceGun");
-				IceGun::DrawImGuiTuning();
-				ImGui::PopID();
-			}
-			if (ImGui::CollapsingHeader("FireGun")) {
-				ImGui::PushID("FireGun");
-				FireGun::DrawImGuiTuning();
-				ImGui::PopID();
+				if (ImGui::BeginTabItem("Parameters")) {
+					if (ImGui::CollapsingHeader("Pistol")) {
+						ImGui::PushID("Pistol");
+						Pistol::DrawImGuiTuning();
+						ImGui::PopID();
+					}
+					if (ImGui::CollapsingHeader("AssaultRifle")) {
+						ImGui::PushID("AssaultRifle");
+						AssaultRifle::DrawImGuiTuning();
+						ImGui::PopID();
+					}
+					if (ImGui::CollapsingHeader("Shotgun")) {
+						ImGui::PushID("Shotgun");
+						Shotgun::DrawImGuiTuning();
+						ImGui::PopID();
+					}
+					if (ImGui::CollapsingHeader("Blaster")) {
+						ImGui::PushID("Blaster");
+						Blaster::DrawImGuiTuning();
+						ImGui::PopID();
+					}
+					if (ImGui::CollapsingHeader("GrenadeLauncher")) {
+						ImGui::PushID("GrenadeLauncher");
+						GrenadeLauncher::DrawImGuiTuning();
+						ImGui::PopID();
+					}
+					if (ImGui::CollapsingHeader("SniperRifle")) {
+						ImGui::PushID("SniperRifle");
+						SniperRifle::DrawImGuiTuning();
+						ImGui::PopID();
+					}
+					if (ImGui::CollapsingHeader("Minigun")) {
+						ImGui::PushID("Minigun");
+						Minigun::DrawImGuiTuning();
+						ImGui::PopID();
+					}
+					if (ImGui::CollapsingHeader("HandCannon")) {
+						ImGui::PushID("HandCannon");
+						HandCannon::DrawImGuiTuning();
+						ImGui::PopID();
+					}
+					if (ImGui::CollapsingHeader("RicochetRifle")) {
+						ImGui::PushID("RicochetRifle");
+						RicochetRifle::DrawImGuiTuning();
+						ImGui::PopID();
+					}
+					if (ImGui::CollapsingHeader("IceGun")) {
+						ImGui::PushID("IceGun");
+						IceGun::DrawImGuiTuning();
+						ImGui::PopID();
+					}
+					if (ImGui::CollapsingHeader("FireGun")) {
+						ImGui::PushID("FireGun");
+						FireGun::DrawImGuiTuning();
+						ImGui::PopID();
+					}
+					ImGui::EndTabItem();
+				}
+				ImGui::EndTabBar();
 			}
 		});
 	}
@@ -384,6 +431,47 @@ void GameScene::Initialize() {
 	}
 #endif
 
+	//===================================
+	// サウンド。LoadFile はファイル全体を読み込むため、プロセス中に1回だけ行えばよい
+	// (Weapon Tuning ウィンドウの登録と同じ static ローカル変数によるガード)。
+	//===================================
+	{
+		static bool soundsLoaded = false;
+		if (!soundsLoaded) {
+			soundsLoaded = true;
+			auto* sm = SoundManager::GetInstance();
+			sm->LoadFile("GameBGM", "Resources/Sounds/Game/GameBGM.mp3");
+			// 素手(パンチのバリエーション。UnarmedWeapon.cpp の kPunchSoundNames と対応させる)
+			sm->LoadFile("Punch_Big", "Resources/Sounds/SE/BareHands/Punch_Big.mp3");
+			sm->LoadFile("Punch_Heavy1", "Resources/Sounds/SE/BareHands/Punch_Heavy1.mp3");
+			sm->LoadFile("Punch_Light1", "Resources/Sounds/SE/BareHands/Punch_Light1.mp3");
+			sm->LoadFile("Punch_Light2", "Resources/Sounds/SE/BareHands/Punch_Light2.mp3");
+			// 銃全般で共有する効果音(武器ごとではなく1つを使い回す)
+			sm->LoadFile("Empty", "Resources/Sounds/SE/Empty.mp3"); // 空撃ちクリック(全銃共通)
+			sm->LoadFile("Drop", "Resources/Sounds/SE/Drop.mp3");   // 弾が残った状態で投げた銃が着地した音(全銃共通)
+			// 銃器の発射音・付随音
+			sm->LoadFile("Pistol_Fire", "Resources/Sounds/SE/Pistol/Pistol_Fire.mp3");
+			sm->LoadFile("AssaultRifle_Fire", "Resources/Sounds/SE/Assault/AssaultRifle_Fire.mp3");
+			sm->LoadFile("Shotgun_Fire", "Resources/Sounds/SE/Shotgun/Shotgun_Fire.mp3");
+			sm->LoadFile("Shotgun_Pump", "Resources/Sounds/SE/Shotgun/Shotgun_Pump.mp3");
+			sm->LoadFile("Blaster_Fire", "Resources/Sounds/SE/Blaster/Blaster_Fire.mp3");
+			sm->LoadFile("Blaster_Explosion", "Resources/Sounds/SE/Blaster/Blaster_Explosion.mp3");
+			sm->LoadFile("GrenadeLauncher_Fire", "Resources/Sounds/SE/GrenadeLauncher/GrenadeLauncher.mp3");
+			sm->LoadFile("GrenadeLauncher_Bounce", "Resources/Sounds/SE/GrenadeLauncher/GrenadeLauncher_Bounce.mp3");
+			sm->LoadFile("Explosion_Default", "Resources/Sounds/SE/GrenadeLauncher/Explosion_Default.mp3");
+			sm->LoadFile("SniperRifle_Fire", "Resources/Sounds/SE/Sniper/SniperRifle_Fire.mp3");
+			sm->LoadFile("SniperRifle_Bolt", "Resources/Sounds/SE/Sniper/SniperRifle_Bolt.mp3");
+			sm->LoadFile("Minigun_Fire", "Resources/Sounds/SE/Minigun/Minigun_Fire.mp3");
+			sm->LoadFile("HandCannon_Fire", "Resources/Sounds/SE/HandCannon/HandCannon_Fire.mp3");
+			sm->LoadFile("RicochetRifle_Fire", "Resources/Sounds/SE/Ricochet/RicochetRifle_Fire.mp3");
+			sm->LoadFile("RicochetRifle_Bounce", "Resources/Sounds/SE/Ricochet/RicochetRifle_Bounce.mp3");
+			sm->LoadFile("IceGun_Fire", "Resources/Sounds/SE/Freeze/IceGun_Fire.mp3");
+			sm->LoadFile("FireGun_Fire", "Resources/Sounds/SE/Flamethrower/FireGun_Fire.mp3");
+			sm->LoadFile("FireHazard_Ignite", "Resources/Sounds/SE/Fire/FireHazard_Ignite.mp3");
+		}
+		SoundManager::GetInstance()->Play2DSound("GameBGM");
+	}
+
 	// 状態異常アウトライン(炎=赤/氷=青の点滅)の ID パスを GameApp に配線する。
 	// GameApp が PostEffect の IdPass 内でこれを呼び、炎/氷のキャラのシルエットを idMaskRT へ描く。
 	GameApp::SetStatusOutlineDrawer([this](ID3D12GraphicsCommandList* /*cmd*/) -> bool {
@@ -404,6 +492,7 @@ void GameScene::Finalize() {
 		s_activeForDebug_ = nullptr;
 	}
 	GameApp::SetStatusOutlineDrawer(nullptr); // 状態異常アウトラインの配線を解除
+	SoundManager::GetInstance()->Stop2DSound("GameBGM");
 	for (EffectHandle h : portalEffectHandles_) {
 		EffectManager::GetInstance()->Stop(h);
 	}
@@ -689,6 +778,11 @@ void GameScene::Update() {
 	if (background_) {
 		background_->Update();
 	}
+
+	// 3D音の定位をカメラへ追従させつつ、再生終了検知を毎フレーム進める(08_Audio.md、
+	// 呼び忘れると3D音の定位が固まり、再生終了の検知も走らない)。
+	SoundManager::GetInstance()->UpdateListener(camera_.get());
+	SoundManager::GetInstance()->Update();
 
 	// ゲームロジックは Player グループの時間で進める。
 	// ヒットストップやスローを入れるときにここが効く
@@ -1038,9 +1132,12 @@ void GameScene::ResolveAttack(Character& attacker, Character& defender, const ch
 		Log(std::string(attackerLabel) + " が壊れる床を破壊(" + std::to_string(broke) + ")\n");
 	}
 
-	// 殴り攻撃が敵かオブジェクト(壊れる床)に当たったら、その腕の位置にヒットエフェクトを出す。
+	// 殴り攻撃が敵かオブジェクト(壊れる床)に当たったら、その腕の位置にヒットエフェクトと
+	// パンチ音を出す(振っただけで何にも当たらなかった場合は鳴らさない)。
 	if (hit || broke > 0) {
 		EffectManager::GetInstance()->Play("meller", hitbox.center);
+		const int pick = RandomGenerator::Instance().NextInt(0, kPunchSoundCount - 1);
+		SoundManager::GetInstance()->Play3DSound(kPunchSoundNames[pick], hitbox.center);
 	}
 	// 攻撃が当たった爆弾ブロックは3秒信管が始まる(少しでも当たれば作動)。
 	stage_->ArmBombsInSphere(hitbox.center, hitbox.radius);
@@ -1162,6 +1259,12 @@ void GameScene::SpawnFlyingObject(const ProjectileSpawnRequest& spec, Character*
 void GameScene::UpdateFlyingObjects(float dt) {
 	for (auto& obj : flyingObjects_) {
 		obj->Update(dt);
+		// 跳ね返り武器(グレネードランチャー・リコシェットライフル)が今フレーム壁/床に
+		// 当たって跳ねたら、その音を鳴らす(bounceSoundName が空の弾は何も鳴らさない)。
+		Vector3 bouncePos{};
+		if (obj->ConsumeBounceEvent(bouncePos) && !obj->GetBounceSoundName().empty()) {
+			SoundManager::GetInstance()->Play3DSound(obj->GetBounceSoundName(), bouncePos);
+		}
 		// 飛翔中の弾が爆弾ブロックに触れたら信管が始まる(直撃で消えなくても、掠めれば作動)。
 		if (!obj->IsDead() && stage_) {
 			stage_->ArmBombsInSphere(obj->GetPosition(), obj->GetRadius());
@@ -1235,6 +1338,7 @@ void GameScene::UpdateFlyingObjects(float dt) {
 		}
 		std::unique_ptr<Weapon> droppedWeapon = obj->TakeThrownWeaponPayload();
 		if (droppedWeapon && droppedWeapon->GetRemainingAmmo() > 0) {
+			SoundManager::GetInstance()->Play3DSound("Drop", obj->GetPosition());
 			auto pickup = std::make_unique<WeaponPickup>();
 			pickup->Initialize(camera_.get(), object3DManager_, dxCore_, obj->GetPosition(), std::move(droppedWeapon), stage_.get());
 			pickups_.push_back(std::move(pickup));
@@ -1263,6 +1367,11 @@ void GameScene::ResolveExplosion(const ArcingProjectile& obj) {
 	// 今まではデバッグ用ワイヤーフレームしか出ておらず、武器の爆風による撃破が
 	// 格闘の meller に対して見た目の演出だけ無いのは不自然だったための追加。
 	EffectManager::GetInstance()->Play("Block_Exprosion", center);
+
+	// 爆発音。武器側が explosionSoundName を指定していればそれを、指定が無ければ
+	// 汎用の爆発音(Explosion_Default)を鳴らす(Blaster.cpp/GrenadeLauncher.cpp 参照)。
+	const std::string& explosionSound = obj.GetExplosionSoundName();
+	SoundManager::GetInstance()->Play3DSound(explosionSound.empty() ? "Explosion_Default" : explosionSound, center);
 
 	// 地形は「着弾点だけ」ではなく爆風半径ぶんまとめて削る(通常弾の着弾チップ削りより
 	// 広い範囲。直撃/地形当たり/寿命切れのどれで死んだかは問わない)。
@@ -1312,6 +1421,8 @@ void GameScene::SpawnFireHazard(const Vector3& center, float radius, float durat
 	auto hazard = std::make_unique<FireHazard>();
 	hazard->Initialize(camera_.get(), center, radius, dps, duration);
 	fireHazards_.push_back(std::move(hazard));
+	// 炎が居座る間ずっとループさせる仕組みは持たないため、着火の瞬間に単発で鳴らす。
+	SoundManager::GetInstance()->Play3DSound("FireHazard_Ignite", center);
 }
 
 void GameScene::UpdateFireHazards(float dt) {
@@ -1367,26 +1478,30 @@ void GameScene::UpdateWeaponSpawner(float dt) {
 	}
 	weaponSpawnTimer_ = kWeaponSpawnInterval;
 
-	// 「自分のマスは空いていて、その真下のマスは地形(足場)」なセルだけを候補にする。
-	// WeaponPickup は物理演算をしない(位置固定)ので、こうしておかないと空中や
-	// 壁の中に湧いてしまう。cy はCSVの行番号で、値が大きいほどワールドでは下(WorldToCell参照)。
-	std::vector<Vector3> candidates;
-	for (int cy = 0; cy < StageGrid::kRows - 1; ++cy) {
-		for (int cx = 0; cx < StageGrid::kCols; ++cx) {
-			if (!stage_->IsSolidCell(cx, cy) && stage_->IsSolidCell(cx, cy + 1)) {
-				candidates.push_back(stage_->CellToWorldCenter(cx, cy));
-			}
-		}
-	}
-	if (candidates.empty()) {
+	// WeaponPickup は物理演算をしない(位置固定)ので、床のあるマスを PickWeaponSpawnPosition で
+	// 選んで渡さないと空中や壁の中に湧いてしまう。
+	Vector3 spawnPos;
+	if (!PickWeaponSpawnPosition(*stage_, &spawnPos)) {
 		return; // 足場のあるステージでは通常起きないが、念のため
 	}
 
-	auto& rng = RandomGenerator::Instance();
-	const Vector3 spawnPos = candidates[static_cast<size_t>(rng.NextInt(0, static_cast<int>(candidates.size()) - 1))];
-
 	auto pickup = std::make_unique<WeaponPickup>();
 	pickup->Initialize(camera_.get(), object3DManager_, dxCore_, spawnPos, CreateRandomWeapon(), stage_.get());
+	pickups_.push_back(std::move(pickup));
+}
+
+void GameScene::SpawnSpecificWeaponPickup(int poolIndex) {
+	if (poolIndex < 0 || poolIndex >= kWeaponSpawnPoolCount || !stage_) {
+		return;
+	}
+	// UpdateWeaponSpawner と同じ候補地選びを使う。enabled チェックは見ない(デバッグ用の
+	// 「今すぐこれを出したい」ボタンなので、Spawn Pool から外していても押せば出せてよい)。
+	Vector3 spawnPos;
+	if (!PickWeaponSpawnPosition(*stage_, &spawnPos)) {
+		return;
+	}
+	auto pickup = std::make_unique<WeaponPickup>();
+	pickup->Initialize(camera_.get(), object3DManager_, dxCore_, spawnPos, g_weaponSpawnPool[poolIndex].factory(), stage_.get());
 	pickups_.push_back(std::move(pickup));
 }
 

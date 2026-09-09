@@ -317,4 +317,12 @@ private:
 
 	/// <summary>weaponSpawnTimer_ を進め、0以下になったらランダムな武器をランダムな位置に1つ湧かせる。</summary>
 	void UpdateWeaponSpawner(float dt);
+
+	/// <summary>
+	/// デバッグ用: g_weaponSpawnPool[poolIndex] の武器を1つ、UpdateWeaponSpawner と同じ
+	/// 抽選ロジック(床のある空きマスをランダムに選ぶ)でその場に即座に湧かせる。
+	/// ImGui の「Weapon Tuning」ウィンドウの Spawn ボタンから呼ばれる(GameScene::Initialize 参照)。
+	/// poolIndex が範囲外、またはステージに湧かせる場所が無い場合は何もしない。
+	/// </summary>
+	void SpawnSpecificWeaponPickup(int poolIndex);
 };

@@ -1,5 +1,7 @@
 #include "Pistol.h"
 
+#include "Sound/SoundManager.h"
+
 #ifdef USE_IMGUI
 #include "imgui.h"
 #endif
@@ -19,10 +21,16 @@ bool Pistol::TryRangedAttack(float dt, bool triggered, bool held, const Vector3&
 	}
 	// トリガーを引いていない/クールダウン中/弾切れ、のいずれかなら発射不成立。
 	if (!triggered || cooldownTimer_ > 0.0f || ammo_ <= 0) {
+		// トリガーは引いたのに弾切れだった場合だけ、空撃ちのクリック音を鳴らす
+		// (クールダウン中の連打では毎回鳴らさない)。
+		if (triggered && cooldownTimer_ <= 0.0f && ammo_ <= 0) {
+			SoundManager::GetInstance()->Play3DSound("Empty", ownerPos);
+		}
 		return false; // 弾切れでも武器はそのまま(自動では捨てない)。撃てないだけ
 	}
 	cooldownTimer_ = kCooldown;
 	--ammo_;
+	SoundManager::GetInstance()->Play3DSound("Pistol_Fire", ownerPos);
 
 	ProjectileSpawnRequest spawn;
 	// 発射位置は自分の中心から照準方向へ少し離す(自分の当たり判定に自分の弾が

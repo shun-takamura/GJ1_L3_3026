@@ -1,8 +1,17 @@
 #include "GrenadeLauncher.h"
 
+#include "Sound/SoundManager.h"
+
 #ifdef USE_IMGUI
 #include "imgui.h"
 #endif
+
+GrenadeLauncher::~GrenadeLauncher() {
+	// 発射音が鳴っている途中で武器が手放された場合、鳴りっぱなしにしない。
+	if (fireSoundHandle_ != 0) {
+		SoundManager::GetInstance()->Stop3DSound(fireSoundHandle_);
+	}
+}
 
 /// <summary>
 /// クールダウン・残弾を見て、撃てるならbounces/proximityRadius/blastRadiusを持つ弾1発ぶんの
@@ -18,10 +27,19 @@ bool GrenadeLauncher::TryRangedAttack(float dt, bool triggered, bool held, const
 		cooldownTimer_ -= dt;
 	}
 	if (!triggered || cooldownTimer_ > 0.0f || ammo_ <= 0) {
+		if (triggered && cooldownTimer_ <= 0.0f && ammo_ <= 0) {
+			SoundManager::GetInstance()->Play3DSound("Empty", ownerPos);
+		}
 		return false;
 	}
 	cooldownTimer_ = kCooldown;
 	--ammo_;
+	// 発射音(約2.87秒)はクールダウン(1.5秒)より長いため、前回ぶんがまだ鳴っていれば
+	// 明示的に止めてから鳴らし直す(でないと連射時に重なって鳴り続ける)。
+	if (fireSoundHandle_ != 0) {
+		SoundManager::GetInstance()->Stop3DSound(fireSoundHandle_);
+	}
+	fireSoundHandle_ = SoundManager::GetInstance()->Play3DSound("GrenadeLauncher_Fire", ownerPos);
 
 	ProjectileSpawnRequest spawn;
 	spawn.origin = {
@@ -41,6 +59,10 @@ bool GrenadeLauncher::TryRangedAttack(float dt, bool triggered, bool held, const
 	spawn.wallRestitution = kWallRestitution;
 	spawn.floorRestitution = kFloorRestitution; // >0なので床でも跳ね続ける
 	spawn.proximityRadius = kBlastRadius;       // 爆風が届く範囲=敵が入ったら起爆する範囲
+	// 爆発音は explosionSoundName を空のままにして、GameScene 側の汎用爆発音
+	// (Explosion_Default = SE/GrenadeLauncher/Explosion_Default.mp3)にフォールバックさせる。
+	// 跳ね返る(壁/床にぶつかる)たびに瓶を叩くような音を鳴らす。
+	spawn.bounceSoundName = "GrenadeLauncher_Bounce";
 	outSpawns.push_back(spawn);
 	return true;
 }

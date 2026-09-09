@@ -10,7 +10,8 @@
     .png         → Resources/同パス/*.dds (BC7, texconv)         [Step 1 で実装]
     .obj + .mtl  → Resources/同パス/*.mesh (バイナリ, pyassimp)  [Step 3 で実装]
     .gltf + .bin → Resources/同パス/*.glb (バイナリ統合)         [Step 5 で実装]
-    .wav         → Resources/同パス/*.wav (コピー)               [Step 1 で実装]
+    .wav / .mp3  → Resources/同パス/同名 (コピー)                 [Step 1 で実装。SoundManager は
+                    Media Foundation 経由で mp3/aac も読めるため、mp3 もそのままコピー対象に含む]
     .mtl .bin    → スキップ（.obj/.gltf 変換に吸収）
     .hdr         → スキップ（convert_hdr_to_dds.py が処理）
 
@@ -108,7 +109,7 @@ def classify(src: Path) -> FileTask:
     if suffix == ".gltf":
         # 出力代表は .mesh。実際には .mesh + .skel + .mat + .anim をまとめて吐く。
         return FileTask(src, Action.CONVERT_GLTF_TO_MESH, RESOURCES_DIR / rel.with_suffix(".mesh"))
-    if suffix in (".wav", ".ttf"):
+    if suffix in (".wav", ".mp3", ".ttf"):
         return FileTask(src, Action.COPY, RESOURCES_DIR / rel)
     if suffix in {".mtl", ".bin", ".hdr", ".fbx"}:
         # .mtl / .bin: .obj / .gltf 変換で吸収

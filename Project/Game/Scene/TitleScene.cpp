@@ -9,6 +9,7 @@
 #include "TextRenderer.h"
 #include "WindowsApplication.h"
 #include "TimeGroup.h"
+#include "Sound/SoundManager.h"
 
 #include <dinput.h>
 #include <Xinput.h>
@@ -65,9 +66,23 @@ void TitleScene::Initialize() {
 	logo_->Initialize(PrimitiveInstance::PrimitiveType::Box, "TitleLogo");
 	logo_->SetCamera(camera_.get());
 	logo_->SetScale({ 1.6f, 1.6f, 1.6f });
+
+	//===================================
+	// タイトルBGM。LoadFile はプロセス中に1回だけでよい(GameScene::Initialize と同じ
+	// static ローカル変数によるガード)。
+	//===================================
+	{
+		static bool titleBgmLoaded = false;
+		if (!titleBgmLoaded) {
+			titleBgmLoaded = true;
+			SoundManager::GetInstance()->LoadFile("TitleBGM", "Resources/Sounds/Title/TitleBGM.mp3");
+		}
+		SoundManager::GetInstance()->Play2DSound("TitleBGM");
+	}
 }
 
 void TitleScene::Finalize() {
+	SoundManager::GetInstance()->Stop2DSound("TitleBGM");
 	logo_.reset();
 	background_.reset();
 	camera_.reset();
@@ -82,6 +97,9 @@ void TitleScene::Update() {
 	if (background_) {
 		background_->Update();
 	}
+
+	// 再生終了検知を毎フレーム進める(08_Audio.md)。
+	SoundManager::GetInstance()->Update();
 
 	// UI グループの時間で回す。ポーズしても回り続けてほしいので World ではない
 	spin_ += GetScaledDeltaTime(TimeGroup::UI) * 0.6f;

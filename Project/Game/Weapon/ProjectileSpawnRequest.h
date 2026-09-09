@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 #include "Vector3.h"
 
 /// <summary>
@@ -74,4 +76,12 @@ struct ProjectileSpawnRequest {
 	float fireHazardRadius = 0.0f;
 	float fireHazardDuration = 0.0f;
 	float fireHazardDps = 0.0f;
+
+	// ---- 効果音(SoundManager::LoadFile で登録済みの名前) ----
+	// 空文字(既定)なら、GameScene 側がそれぞれのデフォルト挙動にフォールバックする
+	// (explosionSoundName が空 → 汎用爆発音 "Explosion_Default"、bounceSoundName が空 →
+	// 跳ね返っても何も鳴らさない)。武器ごとに音を変えたいときだけ Weapon::TryRangedAttack
+	// 側でこのフィールドを埋める(Blaster/GrenadeLauncher/RicochetRifle 参照)。
+	std::string explosionSoundName; // blastRadius>0 の弾が着弾して爆発した瞬間に鳴らす音
+	std::string bounceSoundName;    // bounces=true の弾が壁/床で跳ね返った瞬間に鳴らす音
 };
