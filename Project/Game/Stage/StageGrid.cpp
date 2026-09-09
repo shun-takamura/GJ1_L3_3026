@@ -16,6 +16,8 @@
 #include "RandomGenerator.h"
 #include "Vector4.h"
 
+#include "Stage/InstancedBlockRenderer.h"
+
 namespace {
 	// 種別コード（値 / 10）
 	constexpr int kKindUnbreakable = 1; // 10-19
@@ -25,7 +27,20 @@ namespace {
 	// ギミックの仮ボックス色（本番モデルが入るまでの目印）。
 	const Vector4 kColorBeltLeft { 0.15f, 0.35f, 0.95f, 1.0f }; // 左ベルト = 青
 	const Vector4 kColorBeltRight{ 0.95f, 0.85f, 0.10f, 1.0f }; // 右ベルト = 黄
-	const Vector4 kColorBomb     { 0.95f, 0.12f, 0.10f, 1.0f }; // 爆弾ブロック = 赤
+
+	// 床モデル（GPU インスタンシング描画）。
+	const char* kBlockModelDir      = "Resources/Models/StageGimmick";
+	const char* kUnbreakableModel   = "Block.mesh";
+	const char* kBreakableModel     = "woodBlock.mesh";
+	const Vector3 kUnbreakableScale{ 1.0f, 1.0f, 1.0f };  // Block.obj は約1ユニット
+	const Vector3 kBreakableScale  { 0.5f, 0.5f, 0.5f };  // woodBlock.obj は約2ユニット（実機で微調整）
+	// Block.obj は前後逆にエクスポートされている（奥に装飾）ので Y 180° 補正する。
+	const Vector3 kUnbreakableRotation{ 0.0f, 3.14159265358979f, 0.0f };
+
+	// 爆弾ブロック（woodBlock を赤ティントした別アセット bombBlock.mesh）。
+	const char* kBombModel = "bombBlock.mesh";
+	const Vector4 kBombRestColor { 1.0f, 0.35f, 0.30f, 1.0f }; // bombBlock.mtl の Kd と同じ（点滅解除時に戻す）
+	const Vector4 kBombBlinkColor{ 1.0f, 0.95f, 0.90f, 1.0f }; // 起爆間近の点滅（明色）
 
 	StageGrid::GimmickType GimmickFromValue(int value) {
 		switch (value % 10) {
@@ -126,6 +141,18 @@ void StageGrid::Initialize(Camera* camera, Object3DManager* object3DManager, Dir
 	camera_ = camera;
 	object3DManager_ = object3DManager;
 	dxCore_ = dxCore;
+
+	// 床の GPU インスタンシング描画（PSO 生成を含むので 1 回だけ。以後は SetInstances で並び替え）。
+	if (!unbreakableBlocks_) {
+		unbreakableBlocks_ = std::make_unique<InstancedBlockRenderer>();
+		unbreakableBlocks_->Initialize(object3DManager_, dxCore_, camera_, kBlockModelDir, kUnbreakableModel,
+			kUnbreakableRotation);
+	}
+	if (!breakableBlocks_) {
+		breakableBlocks_ = std::make_unique<InstancedBlockRenderer>();
+		breakableBlocks_->Initialize(object3DManager_, dxCore_, camera_, kBlockModelDir, kBreakableModel);
+	}
+
 	BuildTilesAndGimmicks();
 }
 
@@ -151,24 +178,7 @@ void StageGrid::BuildTilesAndGimmicks() {
 				t.cy = cy;
 				t.value = v;
 				t.hp = (kind == kKindBreakable) ? kBreakableHP : 0.0f;
-
-				t.visual = std::make_unique<PrimitiveInstance>();
-				t.visual->Initialize(PrimitiveInstance::PrimitiveType::Box,
-					"Tile_" + std::to_string(cx) + "_" + std::to_string(cy));
-				t.visual->SetCamera(camera_);
-				t.visual->SetScale({ kCellSize, kCellSize, kCellSize });
-				t.visual->SetTranslate(CellToWorldCenter(cx, cy));
-
-				// 既定は加算ブレンド＋深度書き込み無しなので、不透明タイル用に明示する
-				// （加算だと黒 = {0,0,0} が背景に埋もれて見えない）。
-				PrimitiveMesh& mesh = t.visual->GetMesh();
-				mesh.SetBlendMode(PrimitivePipeline::kBlendModeNormal);
-				mesh.SetDepthWrite(true);
-				mesh.SetCullBackface(true);
-				mesh.SetColor(kind == kKindUnbreakable
-					? Vector4{ 0.0f, 0.0f, 0.0f, 1.0f }   // 壊れない床 = 黒
-					: Vector4{ 1.0f, 1.0f, 1.0f, 1.0f }); // 壊れる床   = 白
-
+				// 見た目は後段の RebuildBlockInstances() が種別ごとにまとめて登録する。
 				tileIndex_[cy][cx] = static_cast<int>(tiles_.size());
 				tiles_.push_back(std::move(t));
 				continue;
@@ -190,23 +200,28 @@ void StageGrid::BuildTilesAndGimmicks() {
 			const Vector3 pos = CellToWorldCenter(cx, cy);
 			const std::string tag = std::to_string(cx) + "_" + std::to_string(cy);
 
-			if (type == GimmickType::Spike) {
-				// トゲだけは専用モデル（Spike.mesh）。描画コンテキスト未設定なら見た目なし（判定は生きる）。
+			if (type == GimmickType::Spike || type == GimmickType::Bomb) {
+				// トゲ / 爆弾ブロックは専用モデル。描画コンテキスト未設定なら見た目なし（判定は生きる）。
 				if (object3DManager_ && dxCore_) {
+					const bool isSpike = (type == GimmickType::Spike);
+					const char* modelFile = isSpike ? "Spike.mesh" : kBombModel;
+					const Vector3 modelScale = isSpike
+						? Vector3{ kCellSize, kCellSize, kCellSize }
+						: kBreakableScale; // 爆弾は woodBlock 由来なので壊れる床と同じスケール
 					g.model = std::make_unique<Object3DInstance>();
 					g.model->Initialize(object3DManager_, dxCore_,
-						"Resources/Models/StageGimmick", "Spike.mesh", "Spike_" + tag);
+						"Resources/Models/StageGimmick", modelFile,
+						(isSpike ? "Spike_" : "Bomb_") + tag);
 					g.model->SetCamera(camera_);
-					g.model->SetScale({ kCellSize, kCellSize, kCellSize });
+					g.model->SetScale(modelScale);
 					g.model->SetTranslate(pos);
 				}
 			} else if (type == GimmickType::Portal) {
 				// ポータルは見た目を Warp エフェクトで出す（GameScene が GetPortalWorldPositions を見て
 				// EffectManager::Play する）。ここでは仮ボックスを作らない。
 			} else {
-				// 左ベルト＝青 / 右ベルト＝黄 / 爆弾＝赤 の仮ボックス。
-				Vector4 color = kColorBomb;
-				if (type == GimmickType::BeltLeft)  color = kColorBeltLeft;
+				// 左ベルト＝青 / 右ベルト＝黄 の仮ボックス。
+				Vector4 color = kColorBeltLeft;
 				if (type == GimmickType::BeltRight) color = kColorBeltRight;
 
 				g.visual = std::make_unique<PrimitiveInstance>();
@@ -234,23 +249,47 @@ void StageGrid::BuildTilesAndGimmicks() {
 			gimmicks_.push_back(std::move(g));
 		}
 	}
+
+	RebuildBlockInstances();
+}
+
+void StageGrid::RebuildBlockInstances() {
+	std::vector<Vector3> unbreakable;
+	std::vector<Vector3> breakable;
+	for (const auto& t : tiles_) {
+		if (t.destroyed) {
+			continue;
+		}
+		const int kind = t.value / 10;
+		if (kind == kKindUnbreakable) {
+			unbreakable.push_back(CellToWorldCenter(t.cx, t.cy));
+		} else if (kind == kKindBreakable) {
+			breakable.push_back(CellToWorldCenter(t.cx, t.cy));
+		}
+	}
+	if (unbreakableBlocks_) unbreakableBlocks_->SetInstances(unbreakable, kUnbreakableScale);
+	if (breakableBlocks_)   breakableBlocks_->SetInstances(breakable, kBreakableScale);
 }
 
 void StageGrid::Finalize() {
 	tiles_.clear();
 	gimmicks_.clear();
 	pendingBombExplosions_.clear();
+	// レンダラ自体は Initialize で作り直さず使い回すので、描画対象だけ空にする。
+	if (unbreakableBlocks_) unbreakableBlocks_->SetInstances({}, kUnbreakableScale);
+	if (breakableBlocks_)   breakableBlocks_->SetInstances({}, kBreakableScale);
 }
 
 void StageGrid::Update(float dt) {
-	for (auto& t : tiles_) {
-		if (!t.destroyed && t.visual) {
-			t.visual->Update();
-		}
-	}
+	if (unbreakableBlocks_) unbreakableBlocks_->Update();
+	if (breakableBlocks_)   breakableBlocks_->Update();
 
 	// 爆弾の信管を進める。0 以下になったら起爆（DetonateBomb が誘爆と地形削りまで行う）。
 	// range-for 中に誘爆で fuse を書き換えるだけなので vector の再確保は起きない。
+	// 見た目は bombBlock.mesh（赤ティスト）。起爆が近いほど速く赤⇔明色で点滅させる。
+	// bombBlock マテリアルは全爆弾で共有なので、色は「今フレームに作動中の爆弾があるか」で決める。
+	bool anyBombArmed = false;
+	float minFuse = 1e9f;
 	for (size_t i = 0; i < gimmicks_.size(); ++i) {
 		Gimmick& g = gimmicks_[i];
 		if (g.type != GimmickType::Bomb || g.destroyed) {
@@ -262,11 +301,23 @@ void StageGrid::Update(float dt) {
 				DetonateBomb(g);
 				continue;
 			}
-			// 起爆が近いほど速く赤⇔白で点滅させる。
-			if (g.visual) {
-				const float period = (std::max)(0.08f, g.fuse * 0.35f);
-				const bool on = std::fmod(g.fuse, period) < period * 0.5f;
-				g.visual->GetMesh().SetColor(on ? Vector4{ 1.0f, 1.0f, 1.0f, 1.0f } : kColorBomb);
+			anyBombArmed = true;
+			minFuse = (std::min)(minFuse, g.fuse);
+		}
+	}
+	{
+		// 生きている爆弾モデルを 1 つ拾ってマテリアル色を反映する（共有マテリアルなので 1 回でよい）。
+		Object3DInstance* bombModel = nullptr;
+		for (auto& g : gimmicks_) {
+			if (g.type == GimmickType::Bomb && !g.destroyed && g.model) { bombModel = g.model.get(); break; }
+		}
+		if (bombModel) {
+			if (anyBombArmed) {
+				const float period = (std::max)(0.08f, minFuse * 0.35f);
+				const bool on = std::fmod(minFuse, period) < period * 0.5f;
+				bombModel->SetMaterialColor(on ? kBombBlinkColor : kBombRestColor);
+			} else {
+				bombModel->SetMaterialColor(kBombRestColor);
 			}
 		}
 	}
@@ -291,11 +342,8 @@ void StageGrid::Update(float dt) {
 }
 
 void StageGrid::Draw() {
-	for (auto& t : tiles_) {
-		if (!t.destroyed && t.visual) {
-			t.visual->Draw();
-		}
-	}
+	// 床（InstancedBlockRenderer）は Object3D パスなので DrawModels() 側で描く。
+	// ここではギミックの仮プリミティブのみ。
 	for (auto& g : gimmicks_) {
 		if (!g.destroyed && g.visual) {
 			g.visual->Draw();
@@ -304,6 +352,11 @@ void StageGrid::Draw() {
 }
 
 void StageGrid::DrawModels(DirectXCore* dxCore) {
+	// 床（GPU インスタンシング）。壊れない床 / 壊れる床で各 1〜数ドローコール。
+	if (unbreakableBlocks_) unbreakableBlocks_->Draw(dxCore);
+	if (breakableBlocks_)   breakableBlocks_->Draw(dxCore);
+
+	// ギミックの Object3D モデル（トゲ）。
 	for (auto& g : gimmicks_) {
 		if (!g.destroyed && g.model) {
 			g.model->Draw(dxCore);
@@ -363,6 +416,20 @@ bool StageGrid::OverlapsSpike(const Vector3& center, const Vector3& half) const 
 	return false;
 }
 
+bool StageGrid::OverlapsAnyPortal(const Vector3& center, const Vector3& half) const {
+	int cxLo, cyLo, cxHi, cyHi;
+	WorldToCell({ center.x - half.x, center.y + half.y, 0.0f }, cxLo, cyLo);
+	WorldToCell({ center.x + half.x, center.y - half.y, 0.0f }, cxHi, cyHi);
+	for (int cy = cyLo; cy <= cyHi; ++cy) {
+		for (int cx = cxLo; cx <= cxHi; ++cx) {
+			if (GimmickTypeAtCell(cx, cy) == GimmickType::Portal) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 bool StageGrid::TryPortal(const Vector3& center, const Vector3& half, Vector3& outDest) {
 	int cxLo, cyLo, cxHi, cyHi;
 	WorldToCell({ center.x - half.x, center.y + half.y, 0.0f }, cxLo, cyLo);
@@ -387,7 +454,17 @@ bool StageGrid::TryPortal(const Vector3& center, const Vector3& half, Vector3& o
 		return false;
 	}
 	const int pick = RandomGenerator::Instance().NextInt(0, static_cast<int>(exits.size()) - 1);
-	outDest = CellToWorldCenter(exits[pick]->cx, exits[pick]->cy);
+	const int ecx = exits[pick]->cx;
+	const int ecy = exits[pick]->cy;
+	Vector3 dest = CellToWorldCenter(ecx, ecy);
+
+	// 出口ポータルの真下がブロックなら、その上面にキャラの足がぴったり乗る高さへ調整する
+	// （ポータルセル中心にそのまま置くと、端のブロック上で位置がズレて落ちることがある）。
+	if (IsSolidCell(ecx, ecy + 1)) {
+		const float blockTop = CellToWorldCenter(ecx, ecy + 1).y + kCellSize * 0.5f;
+		dest.y = blockTop + half.y + 0.02f; // half.y = キャラ中心〜足元。resting 位置
+	}
+	outDest = dest;
 	return true;
 }
 
@@ -477,12 +554,12 @@ int StageGrid::DamageSphere(const Vector3& center, float radius, float damage, b
 				t.permanentlyDestroyed = true; // ResetTerrain でも復活させない
 			}
 			++broke;
-		} else if (t.visual) {
-			// 破壊されるまでは見た目の変化が無く「本当にダメージが通っているのか」が
-			// 分かりにくいので、残りHPの割合ぶん赤みを強くする(満タン=白 → 瀕死=赤)。
-			const float ratio = (std::max)(t.hp / kBreakableHP, 0.0f);
-			t.visual->GetMesh().SetColor({ 1.0f, ratio, ratio, 1.0f });
 		}
+		// （破壊前の残HPに応じた赤み表示は、GPU インスタンシング化で per-instance 色が
+		//  別途必要になるため廃止。壊れる床は HP0 で消えるだけ）
+	}
+	if (broke > 0) {
+		RebuildBlockInstances(); // 壊れた床を描画対象から外す
 	}
 	return broke;
 }
@@ -494,12 +571,10 @@ void StageGrid::ResetTerrain() {
 		}
 		if (t.value / 10 == kKindBreakable) {
 			t.hp = kBreakableHP;
-			if (t.visual) {
-				t.visual->GetMesh().SetColor({ 1.0f, 1.0f, 1.0f, 1.0f }); // ダメージ表示の赤みも元の白へ戻す
-			}
 		}
 		t.destroyed = false;
 	}
+	RebuildBlockInstances(); // 復活した床を描画対象へ戻す
 }
 
 int StageGrid::GetChip(int cx, int cy) const {

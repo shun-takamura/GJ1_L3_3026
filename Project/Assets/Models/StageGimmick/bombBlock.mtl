@@ -1,0 +1,13 @@
+# woodBlock を赤くティントした爆弾ブロック用マテリアル。
+# base color テクスチャは woodBlock と同じものを流用し、Kd で赤み倍率をかける。
+
+newmtl Material
+Kd 1.000000 0.350000 0.300000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd basecolor.png
+norm normal.png
+map_Pr roughness.png

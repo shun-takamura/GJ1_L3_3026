@@ -1,13 +1,25 @@
 #include "SceneFactory.h"
 
-#include "TitleScene.h"
 #include "GameScene.h"
 #include "ResultScene.h"
 
 std::unique_ptr<Scene> SceneFactory::CreateScene(const std::string& sceneName) {
 	// ここに追加していく。名前は SceneManager::ChangeScene に渡すものと揃える
 	if (sceneName == "Title") {
-		return std::make_unique<TitleScene>();
+		// タイトル画面は「敵 AI 同士が Sample ステージで戦い続けるデモプレイ」。
+		// 専用の TitleScene は持たず、アトラクトモードにした GameScene をそのまま使う
+		// (SPACE / Enter / (A) で本編の Game シーンへ入る)。
+		auto scene = std::make_unique<GameScene>();
+		scene->SetAttractMode(true);
+		return scene;
+	}
+	if (sceneName == "Tutorial") {
+		// チュートリアルも専用シーンは持たず、チュートリアルモードにした GameScene を使う
+		// (ステージ・ギミック・キャラ・武器の挙動を本編とまったく同じものにするため)。
+		// タイトルの SPACE から、SaveData の完了フラグが立っていないときだけここへ来る。
+		auto scene = std::make_unique<GameScene>();
+		scene->SetTutorialMode(true);
+		return scene;
 	}
 	if (sceneName == "Game") {
 		return std::make_unique<GameScene>();

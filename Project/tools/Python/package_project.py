@@ -76,6 +76,8 @@ EXCLUDE_SUFFIXES = {
 EXCLUDE_FILE_NAMES = {
     ".env",             # APIキー等。絶対に配布物へ入れない
     "imgui.ini",        # ウィンドウ配置。実行時に再生成される
+    "SaveData.txt",     # 開発機のセーブデータ（チュートリアル完了済み等）。実行時に再生成される
+                        # ＝ 提出物は必ずチュートリアル未完了の状態から始まる
     "sync_cache.json",
     "desktop.ini",
     "Thumbs.db",

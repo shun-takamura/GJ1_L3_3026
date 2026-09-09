@@ -7,6 +7,7 @@
 #include "Camera.h"
 #include "Vector4.h"
 #include "Primitive/PrimitiveInstance.h"
+#include "Object3DInstance.h"
 #include "Character/Character.h"
 #include "Stage/StageGrid.h"
 #include "Stage/StageCatalog.h"
@@ -18,6 +19,8 @@
 #include "AI/PlayerModel.h"
 #include "Common/CharacterInput.h"
 #include "Match/MatchRule.h"
+#include "Tutorial/TutorialDirector.h"
+#include "Tutorial/TutorialEnemyBrain.h"
 
 /// <summary>
 /// ゲーム本編の雛形(フェーズ1: 触れる最小プロトタイプ)。
@@ -48,7 +51,83 @@ public:
 
 	Camera* GetCamera() override { return camera_.get(); }
 
+	/// <summary>
+	/// アトラクト(デモ)モードを有効にする。SceneFactory が "Title" 用の GameScene に対して呼ぶ。
+	/// このモードでは:
+	///   - ステージは常に Sample 固定(ランダム抽選しない)。
+	///   - プレイヤー枠も playerBrain_ が動かす(敵 AI 同士のデモプレイ)。
+	///   - セットが決着しても Result へ遷移せず、得点をリセットして無限にループする。
+	///   - ESC/(B) でのタイトル復帰は無効。代わりに SPACE/Enter/(A) で本編(Game)へ入る。
+	/// Initialize() より前に呼ぶこと。
+	/// </summary>
+	void SetAttractMode(bool on) { attractMode_ = on; }
+
+	/// <summary>
+	/// チュートリアルモードを有効にする。SceneFactory が "Tutorial" 用の GameScene に対して呼ぶ。
+	/// このモードでは:
+	///   - ステージは Stage_Tutorial 固定(カウントダウン無しで即開始)。
+	///   - 敵は tutorialBrain_(攻撃してこない移動専用 AI)が動かす。
+	///   - 武器の定期スポーンは止め、説明が武器の段に来たときだけ 1 丁置く。
+	///   - 得点(MatchRule)・ステージ切替・Result 遷移は一切行わない。どちらかがやられても
+	///     地形の破壊状況と説明の進行段階はそのままに、位置と HP だけ初期へ戻す。
+	///   - 全ての説明を終えた後に敵を倒すと、セーブして本編(Game)へ遷移する。
+	/// Initialize() より前に呼ぶこと。
+	/// </summary>
+	void SetTutorialMode(bool on) { tutorialMode_ = on; }
+
 private:
+	// アトラクト(デモ)モードか。SetAttractMode 参照。
+	bool attractMode_ = false;
+
+	//====================
+	// チュートリアル(SetTutorialMode 参照)
+	//====================
+
+	bool tutorialMode_ = false;
+	// 説明の進行(どの段を出しているか)だけを持つ。描画・完了判定は GameScene 側。
+	std::unique_ptr<TutorialDirector> tutorial_;
+	// 攻撃してこない移動専用の敵 AI。チュートリアル時のみ生成し、enemyBrain_ の代わりに使う。
+	std::unique_ptr<TutorialEnemyBrain> tutorialBrain_;
+	// どちらかがやられてから位置リセットするまでの猶予(死亡モーション/落下を少し見せる)。
+	float tutorialRespawnTimer_ = 0.0f;
+	static constexpr float kTutorialRespawnDelay = 0.8f;
+	// 完了して本編へ遷移済みか(遷移フレーム以降に多重で処理しないためのラッチ)。
+	bool tutorialFinished_ = false;
+
+	/// <summary>
+	/// チュートリアルの進行本体。UpdateBattle から、通常モードの得点判定の代わりに呼ぶ。
+	/// 武器の設置・SPACE(パッドは (B))での説明送り・やられたときの位置リセット・
+	/// 「全説明後に敵を倒したら完了」の判定をまとめて行う。
+	/// </summary>
+	void UpdateTutorial(float dt);
+
+	/// <summary>
+	/// プレイヤーと敵を初期位置・満タン HP へ戻す。ステージは作り直さない ──
+	/// 壊した床・起爆した爆弾などの破壊状況と、説明の進行段階をそのまま維持するため。
+	/// </summary>
+	void ResetTutorialPositions();
+
+	/// <summary>プレイヤー初期位置に一番近い足場の上に、拾える武器(Pistol)を 1 つ置く。</summary>
+	void SpawnTutorialWeapon();
+
+	/// <summary>画面下のチュートリアル説明パネルを描く(Draw から呼ぶ)。</summary>
+	void DrawTutorialGuide();
+
+	/// <summary>ゲームパッドが接続されているか(説明のキー表記をパッド用に切り替える判定)。</summary>
+	bool IsPadConnected() const;
+
+	/// <summary>起動時 / ラウンド跨ぎで読み込むステージ index を決める。
+	/// アトラクト時は名前に "Sample" を含む最初のステージ(無ければ 0)、
+	/// 通常時は StageCatalog のシャッフルバッグ抽選(Sample 除外・一巡まで重複なし)。</summary>
+	int PickStartStageIndex();
+
+	/// <summary>
+	/// brain に self/target・ステージ・最寄り pickup・飛来脅威を詰めた BrainContext を渡して
+	/// このフレームの CharacterInput を得る。敵 AI にもアトラクト時のプレイヤー AI にも使う。
+	/// </summary>
+	CharacterInput DecideAiInput(EnemyBrain& brain, Character& self, Character& target,
+		const PlayerModel* model, float dt);
+
 	// Resources/Stages/*.csv の一覧。起動時にランダムで1枚選び、デバッグ ImGui から切り替えられる。
 	StageCatalog stageCatalog_;
 	int currentStageIndex_ = 0;
@@ -109,6 +188,48 @@ private:
 	// Stage Select ImGui ウィンドウ（プロセス中1回だけ登録）から現在の GameScene を触るための口。
 	static GameScene* s_activeForDebug_;
 
+	//====================
+	// コントローラー振動（XInput）
+	// left  = 低周波の重い振動 / right = 高周波の細かい振動。0〜65535。
+	// TriggerRumble で (左右の強さ, 秒数) をセットし、毎フレーム UpdateRumble が
+	// 残り時間を減らして 0 で StopVibration する。attractMode_ 中は鳴らさない。
+	//====================
+	static constexpr unsigned short kHitMotorLeft = 14000;   // 被弾：弱め（左右対称）
+	static constexpr unsigned short kHitMotorRight = 22000;
+	static constexpr float kHitRumbleSeconds = 0.18f;
+	static constexpr unsigned short kExplosionMotorMid = 40000; // 爆発：中くらい（爆発側 / 近距離）
+	static constexpr unsigned short kExplosionMotorLow = 16000; // 爆発：弱め（爆発と反対側で振り切ったとき）
+	static constexpr float kExplosionRumbleSeconds = 0.35f;
+	// 爆発中心とプレイヤーの X 距離がこれ以上なら左右のパンを振り切る（調整用）。
+	static constexpr float kRumblePanDistance = 6.0f;
+
+	float rumbleRemaining_ = 0.0f;      // 振動の残り秒（0以下で停止）
+	unsigned short rumbleLeft_ = 0;     // 現在鳴らしている左モーター強さ
+	unsigned short rumbleRight_ = 0;    // 現在鳴らしている右モーター強さ
+	float prevPlayerHP_ = 0.0f;         // 前フレームのプレイヤー HP（減っていたら被弾とみなす）
+
+	/// <summary>
+	/// 左右モーターの強さと継続秒を指定して振動を要求する。再生中の振動より弱い要求は
+	/// 強さを上書きせず継続時間だけ必要に応じて延長する（強い振動が弱い振動に負けない）。
+	/// attractMode_（プレイヤーが AI のデモ）では何もしない。
+	/// </summary>
+	void TriggerRumble(unsigned short left, unsigned short right, float seconds);
+
+	/// <summary>
+	/// 爆発中心 center とプレイヤーの X 座標差から左右モーターの強さを決めて TriggerRumble する。
+	/// 爆発側のモーターは常に中、反対側は距離に応じて中→弱へ落ちる（真上・真下・至近は両方中）。
+	/// </summary>
+	void TriggerExplosionRumble(const Vector3& center);
+
+	/// <summary>振動の残り時間を進め、尽きたら StopVibration する。毎フレーム Update から呼ぶ。</summary>
+	void UpdateRumble(float dt);
+
+	/// <summary>
+	/// 振動を即時停止して状態をクリアする（安全機能）。
+	/// ステージ切り替え・ゲーム終了（シーン遷移）・Finalize で呼び、振動が鳴りっぱなしにならないようにする。
+	/// </summary>
+	void StopRumble();
+
 	std::unique_ptr<Camera> camera_;
 
 	// アリーナの背景。カメラの奥に大きな Plane を置いてテクスチャを貼るだけで、
@@ -126,6 +247,14 @@ private:
 	static constexpr bool kEnemyTurretMode = false;
 	std::unique_ptr<EnemyBrain> enemyBrain_;
 	std::unique_ptr<PlayerModel> playerModel_;
+
+	// アトラクト(デモ)モードでプレイヤー枠を動かす AI。通常モードでは生成しない。
+	std::unique_ptr<EnemyBrain> playerBrain_;
+
+	// アトラクト(デモ)モードで画面上方に表示するタイトルロゴ(Title.mesh)。通常モードでは生成しない。
+	std::unique_ptr<Object3DInstance> titleLogo_;
+	// タイトルロゴの UV を毎フレーム横スクロールさせる量(0..1 でループ)。虹テクスチャが流れる。
+	float titleLogoUvScroll_ = 0.0f;
 
 	// ステージ(CSV から生成)。場外判定・地形当たり判定はここへ委譲する。
 	std::unique_ptr<StageGrid> stage_;

@@ -158,6 +158,10 @@ public:
 	/// </summary>
 	void ApplyBlastKnockback(float dirX, float dirY, float power);
 
+	/// <summary>ノックバック・落下/上昇・壁ジャンプの残り速度をすべて 0 にする（位置はそのまま）。
+	/// ポータルで瞬間移動した直後など、慣性で意図しない方向へ流したくないときに呼ぶ。</summary>
+	void CancelMomentum();
+
 	/// <summary>移動速度に multiplier(1.0未満で減速)を duration 秒だけ掛ける(氷銃用)。
 	/// ApplyKnockback と同じ上書き式 ── 再命中すれば効果時間・強さがその時点の値に更新される
 	/// (積み増しはしない)。multiplier が 1.0 以上、または duration が 0 以下なら何もしない。</summary>

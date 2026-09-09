@@ -12,6 +12,7 @@ class PrimitiveInstance;
 class Object3DInstance;
 class Object3DManager;
 class DirectXCore;
+class InstancedBlockRenderer;
 
 /// <summary>
 /// CSV マップチップ 1 枚を読み込み、描画・当たり判定・破壊・リセットを引き受ける。
@@ -116,6 +117,10 @@ public:
 	/// <summary>中心 center・半サイズ half の AABB がトゲ（32）のセルと重なっているか（＝即死）。</summary>
 	bool OverlapsSpike(const Vector3& center, const Vector3& half) const override;
 
+	/// <summary>中心 center・半サイズ half の AABB がいずれかのポータルセルと少しでも重なっているか。
+	/// 「出てきたワープから完全に離れるまで再ワープさせない」ロック解除の判定に使う。</summary>
+	bool OverlapsAnyPortal(const Vector3& center, const Vector3& half) const;
+
 	/// <summary>中心 center・半サイズ half の AABB がいずれかのポータルセルと重なっていれば true を返し、
 	/// 出口ワールド座標を outDest に入れる。出口は「重なっていない」ポータルからランダムに 1 つ。
 	/// 重なっていないポータルが 1 つも無ければ（＝全ポータルに跨っている / 単独ポータル）false。
@@ -164,7 +169,8 @@ private:
 		bool destroyed = false;
 		bool permanentlyDestroyed = false; // 爆弾ブロックの爆風で壊れた床。ResetTerrain でも復活しない
 		float hp = 0.0f;      // 壊れる床のみ意味を持つ
-		std::unique_ptr<PrimitiveInstance> visual;
+		// 見た目はセル単位の PrimitiveInstance ではなく、種別ごとの InstancedBlockRenderer が
+		// 生存タイルをまとめて GPU インスタンシング描画する（unbreakableBlocks_ / breakableBlocks_）。
 	};
 
 	// ギミック 1 マス分（30 番台）。ベルト／爆弾／ポータルは仮ボックス（visual）、トゲは Spike.mesh（model）。
@@ -183,6 +189,11 @@ private:
 	GimmickType GimmickTypeAtCell(int cx, int cy) const;
 	void DetonateBomb(Gimmick& bomb);
 
+	/// <summary>生存している床タイルの中心座標を種別ごとに集め、
+	/// unbreakableBlocks_ / breakableBlocks_ の描画インスタンスを組み直す。
+	/// 生成時・破壊時・ResetTerrain 時に呼ぶ。</summary>
+	void RebuildBlockInstances();
+
 	Camera* camera_ = nullptr;
 	Object3DManager* object3DManager_ = nullptr;
 	DirectXCore* dxCore_ = nullptr;
@@ -191,8 +202,13 @@ private:
 	int tileIndex_[kRows][kCols] = {};     // tiles_ への添字。-1 で「見た目なし」
 	int gimmickIndex_[kRows][kCols] = {};  // gimmicks_ への添字。-1 で「ギミックなし」
 
-	std::vector<Tile> tiles_;              // 見た目を持つセル（10/20 系）のみ
+	std::vector<Tile> tiles_;              // 床セル（10/20 系）。当たり判定・破壊状態を持つ
 	std::vector<Gimmick> gimmicks_;        // ギミック（30 番台）のみ
+
+	// 床の見た目。種別ごとに 1 つで、生存タイルを GPU インスタンシングでまとめ描画する。
+	// Initialize で 1 回だけ生成し、以後は SetInstances で並びを差し替える。
+	std::unique_ptr<InstancedBlockRenderer> unbreakableBlocks_; // Block.mesh
+	std::unique_ptr<InstancedBlockRenderer> breakableBlocks_;   // woodBlock.mesh
 
 	float beltUvOffset_ = 0.0f;            // ベルト tread の現在の UV スクロール位相（0..1 で wrap）
 	std::vector<BombExplosion> pendingBombExplosions_;

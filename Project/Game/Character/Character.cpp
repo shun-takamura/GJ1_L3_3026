@@ -889,6 +889,12 @@ void Character::ApplyBlastKnockback(float dirX, float dirY, float power) {
 	}
 }
 
+void Character::CancelMomentum() {
+	knockbackVelocityX_ = 0.0f;
+	verticalVelocity_ = 0.0f;
+	wallJumpVelocityX_ = 0.0f;
+}
+
 void Character::ApplySlow(float multiplier, float duration) {
 	if (multiplier >= 1.0f || duration <= 0.0f) {
 		return; // 減速にならない/一瞬も持続しない指定は無視する

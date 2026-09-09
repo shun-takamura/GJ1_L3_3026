@@ -505,6 +505,20 @@ CharacterInput EnemyBrain::Think(const BrainContext& ctx) {
 		}
 	}
 
+	// 銃を持って射程内で止まっている（desiredMoveX==0）と上のナビ先読みが走らない。
+	// 相手への射線が地形で切れていて、その正面が「壊れるブロック」なら、
+	// 移動意図が 0 でも掘りモードに入れる（素手だと常に間合いを詰めるので既に上で拾えている）。
+	if (ctx.stage && !wantBreakWall && !pin.targetIsDead && !p.hasLineOfSight
+		&& state_ != State::Retreat && state_ != State::FetchWeapon) {
+		const float dir = (p.dirToTargetX >= 0.0f) ? 1.0f : -1.0f;
+		const AINav::MoveHazard h = AINav::Probe(*ctx.stage, pin.selfPos, dir,
+			kFeetHalfY, kLookAhead, jumpGap, kAiMaxJumpUp, kMaxSafeDrop);
+		if (h.wallAhead && h.breakableAhead) {
+			wantBreakWall = true;
+			breakWallDir = dir;
+		}
+	}
+
 	// 詰まりタイマー: すぐ 0 に戻すと「壁へ寄る→少し下がる→また寄る」の往復で
 	// 毎サイクル・リセットされ、走りモーションのまま前後にプルプルし続ける。
 	// ブロック中は加算、非ブロック中は緩やかに減衰させて往復の記憶を残す。
@@ -653,21 +667,62 @@ CharacterInput EnemyBrain::Think(const BrainContext& ctx) {
 	}
 
 	// ================= 壊せる壁を掘って進む =================
-	// 迂回・ジャンプできない壁が「壊れるブロック」なら、正面に狙いを向けて攻撃で崩す。
-	// 弾切れ（撃てない）と素手で射程外のときは崩せないので何もしない。
-	// 壁へ押し付けて撃つ／殴るので、素手でも銃でも正面の壁には届く。
-	if (wantBreakWall && !pin.targetIsDead && !outOfAmmo) {
-		float ax = breakWallDir;
-		float ay = -0.12f; // 足元寄りのブロックも巻き込むよう気持ち下向き
-		const float l = std::sqrt(ax * ax + ay * ay);
-		ax /= l; ay /= l;
-		out.aimDirX = ax;
-		out.aimDirY = ay;
-		out.moveX = breakWallDir * 0.5f; // 壁へ押し付け続ける（崩れた瞬間に前進）
-		out.attackHeld = true;
-		if (attackRefireTimer_ <= 0.0f) {
-			out.attackTriggered = true;
-			attackRefireTimer_ = kAttackRefire;
+	// 進路／射線を塞ぐ「壊れるブロック」を崩す。手段は装備状況で自動的に選ぶ:
+	//   ・弾に余裕のある銃 → その場から撃って壊す
+	//   ・残弾わずかな銃   → 弾を温存。銃を安全な後方へ投げ置き、素手で殴って壊し、あとで拾い直す
+	//   ・弾切れの銃       → その銃は捨てて（投げ）、素手で殴る
+	//   ・素手            → 壁に押し付けて殴る
+	if (wantBreakWall && !pin.targetIsDead) {
+		auto aimAtWall = [&]() {
+			float ax = breakWallDir;
+			float ay = -0.12f; // 足元寄りのブロックも巻き込むよう気持ち下向き
+			const float l = std::sqrt(ax * ax + ay * ay);
+			out.aimDirX = ax / l;
+			out.aimDirY = ay / l;
+		};
+		auto meleeWall = [&]() {
+			aimAtWall();
+			out.moveX = breakWallDir * 0.5f; // 壁へ押し付け続ける（崩れた瞬間に前進）
+			out.attackHeld = true;
+			if (attackRefireTimer_ <= 0.0f) {
+				out.attackTriggered = true;
+				attackRefireTimer_ = kAttackRefire;
+			}
+		};
+
+		if (hasWeapon && (ammo > kLowAmmoCount || throwCdTimer_ > 0.0f)) {
+			// --- 弾に余裕（または今すぐ投げられない）→ 撃って壊す。
+			//     反動で下がるぶん軽く前へ詰め、厚い壁も前面から削って進む。 ---
+			aimAtWall();
+			out.moveX = breakWallDir * 0.3f;
+			out.attackHeld = true;
+			if (attackRefireTimer_ <= 0.0f) {
+				out.attackTriggered = true;
+				attackRefireTimer_ = kAttackRefire;
+			}
+		} else if (hasWeapon) {
+			// --- 残弾わずか／弾切れ → 銃を手放す（安全なら後方へ、危険なら足元へ）。
+			//     次フレームから素手になり meleeWall へ落ちる。残弾があれば投げた銃は
+			//     その場に落ちるので、壁を抜けたあと既存の FetchWeapon が拾い直す。 ---
+			float tx = -breakWallDir;
+			float ty = 0.35f; // 後方へ軽い山なり
+			if (ctx.stage) {
+				const AINav::MoveHazard back = AINav::Probe(*ctx.stage, pin.selfPos, -breakWallDir,
+					kFeetHalfY, kLookAhead, kAiMaxJumpGap, kAiMaxJumpUp, kMaxSafeDrop);
+				if (back.edgeAhead || back.spikeAhead
+					|| (back.pitAhead && !back.jumpClears && !back.dropAhead)) {
+					tx = 0.0f; ty = -1.0f; // 後方が危険 → 足元に落とす
+				}
+			}
+			const float l = std::sqrt(tx * tx + ty * ty);
+			out.aimDirX = tx / l;
+			out.aimDirY = ty / l;
+			out.throwTriggered = true;
+			out.moveX = 0.0f;
+			throwCdTimer_ = kThrowVsCroucherCd; // 投げ直しスパム防止
+		} else {
+			// --- 素手（または投げ置き済み）→ 壁に押し付けて殴る ---
+			meleeWall();
 		}
 		terrainBlocked = true; // HUD 表示用（末尾で dbg_ に反映）
 	}

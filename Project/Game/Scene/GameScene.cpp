@@ -36,6 +36,7 @@
 #include "Sound/SoundManager.h"
 #include "GameApp.h"
 #include "Match/MatchResultRelay.h"
+#include "Save/SaveData.h"
 #include "Effect/EffectManager.h"
 #include "Log.h"
 
@@ -203,6 +204,31 @@ namespace {
 
 GameScene* GameScene::s_activeForDebug_ = nullptr;
 
+int GameScene::PickStartStageIndex() {
+	if (attractMode_) {
+		// アトラクト(デモ)は常に Sample ステージ。名前に "Sample" を含む最初のものを使う。
+		for (int i = 0; i < stageCatalog_.Count(); ++i) {
+			if (stageCatalog_.NameAt(i).find("Sample") != std::string::npos) {
+				return i;
+			}
+		}
+		return 0; // 見つからなければ先頭
+	}
+	if (tutorialMode_) {
+		// チュートリアルは専用ステージ固定。名前に "Tutorial" を含む最初のものを使う。
+		for (int i = 0; i < stageCatalog_.Count(); ++i) {
+			if (stageCatalog_.NameAt(i).find("Tutorial") != std::string::npos) {
+				return i;
+			}
+		}
+		Log("GameScene: Stage_Tutorial が見つかりません -> 先頭のステージで代用します\n");
+		return 0;
+	}
+	// 本編は Sample を除いたシャッフルバッグ抽選。1 セット(どちらか 10 点先取)が終わるまで
+	// 同じステージを引かない。バッグの仕切り直しは ResetBattleRotation()（セット決着時に呼ぶ）。
+	return stageCatalog_.PickNextBattleIndex();
+}
+
 void GameScene::Initialize() {
 	s_activeForDebug_ = this;
 
@@ -248,7 +274,10 @@ void GameScene::Initialize() {
 		background_->SetTranslate(bgPos);
 		background_->SetRotate(camera_->GetRotate());
 		background_->SetScale({ 52.0f, 29.0f, 1.0f });
-		background_->SetTexture("Resources/Textures/BackGround.dds");
+		// アトラクト(デモ) = タイトル画面なので、旧 TitleScene と同じタイトル用背景を貼る。
+		background_->SetTexture(attractMode_
+			? "Resources/Textures/Title.dds"
+			: "Resources/Textures/BackGround.dds");
 	}
 
 	//===================================
@@ -257,7 +286,7 @@ void GameScene::Initialize() {
 	// CSV が読めない場合は最下段だけ床にしたフォールバックで起動する。
 	//===================================
 	stageCatalog_.Scan();
-	currentStageIndex_ = stageCatalog_.PickRandomIndex();
+	currentStageIndex_ = PickStartStageIndex();
 	Log("GameScene: ステージ選出 -> " + stageCatalog_.NameAt(currentStageIndex_) + "\n");
 
 	stage_ = std::make_unique<StageGrid>();
@@ -279,6 +308,7 @@ void GameScene::Initialize() {
 	player_ = std::make_unique<Character>();
 	player_->Initialize(camera_.get(), "Player", playerSpawn_);
 	player_->SetStage(stage_.get());
+	prevPlayerHP_ = player_->GetHP(); // 被弾振動の基準（初期化直後は満タン）
 #ifdef USE_IMGUI
 	player_->SetWeaponRenderContext(object3DManager_, dxCore_);
 #endif // USE_IMGUI
@@ -292,16 +322,50 @@ void GameScene::Initialize() {
 
 	// 見た目の仮 Box をスキニング付きアニメモデルに差し替える(アセットが無ければ Box のまま)。
 	// プレイヤー=青 / 敵=赤。被弾中は赤・氷結中は水色に上書きされる。
+	// アトラクト(デモ)は「敵 AI 同士の対戦」なので、両者とも敵の赤にする。
+	const Vector4 kEnemyColor{ 1.0f, 0.32f, 0.28f, 1.0f };
 	player_->SetupAnimatedModel(object3DManager_, skinningComputeManager_, dxCore_, srvManager_,
-		{ 0.28f, 0.55f, 1.0f, 1.0f });
+		attractMode_ ? kEnemyColor : Vector4{ 0.28f, 0.55f, 1.0f, 1.0f });
 	enemy_->SetupAnimatedModel(object3DManager_, skinningComputeManager_, dxCore_, srvManager_,
-		{ 1.0f, 0.32f, 0.28f, 1.0f });
+		kEnemyColor);
 
 	// 敵 AI と学習モデル。GameScene は Think() の結果を Character へ渡すだけ。
 	enemyBrain_ = std::make_unique<EnemyBrain>();
 	enemyBrain_->Initialize(kEnemyTurretMode);
 	playerModel_ = std::make_unique<PlayerModel>();
 	playerModel_->Reset();
+
+	// アトラクト(デモ)モードでは、プレイヤー枠も AI が動かす(敵 AI 同士の対戦をループ再生)。
+	if (attractMode_) {
+		playerBrain_ = std::make_unique<EnemyBrain>();
+		playerBrain_->Initialize(false);
+
+		// タイトルロゴ(Title.mesh)を画面の少し上の方に置く。位置・スケールは仮値。
+		if (object3DManager_ && dxCore_) {
+			const Vector3 kTitleLogoPos{ 0.0f, 12.0f, -8.0f }; // x=中央 / y=中央より上 / z=手前(カメラ寄り)
+			const Vector3 kTitleLogoScale{ 3.0f, 3.0f, 3.0f };
+			titleLogo_ = std::make_unique<Object3DInstance>();
+			titleLogo_->Initialize(object3DManager_, dxCore_, "Resources/Models/Title", "Title.mesh", "TitleLogo");
+			titleLogo_->SetCamera(camera_.get());
+			titleLogo_->SetScale(kTitleLogoScale);
+			titleLogo_->SetTranslate(kTitleLogoPos);
+			// OBJ 取り込み時の RH→LH 変換(x 反転)で文字が鏡像になるため、Y 軸 180° で戻す
+			// (Block.obj と同じ対処。InstancedBlockRenderer の kUnbreakableRotation 参照)。
+			titleLogo_->SetRotate({ 0.0f, kPi, 0.0f });
+			titleLogo_->Update();
+		}
+	}
+
+	// チュートリアル。説明の進行役と、攻撃してこない移動専用の敵 AI を用意する
+	// (enemyBrain_ は生成だけされて使われない。切り分けは UpdateBattle 側で行う)。
+	if (tutorialMode_) {
+		tutorial_ = std::make_unique<TutorialDirector>();
+		tutorial_->Reset();
+		tutorialBrain_ = std::make_unique<TutorialEnemyBrain>();
+		tutorialBrain_->Reset();
+		tutorialRespawnTimer_ = 0.0f;
+		tutorialFinished_ = false;
+	}
 
 	matchRule_.Reset();
 
@@ -429,6 +493,24 @@ void GameScene::Initialize() {
 			}
 		});
 	}
+
+	// デバッグ: セーブデータ(チュートリアル完了フラグ)の確認とリセット。
+	// タイトルの SPACE が「チュートリアルへ」「本編へ」のどちらに飛ぶかをここで切り替えられる。
+	static bool saveDataWindowRegistered = false;
+	if (!saveDataWindowRegistered) {
+		saveDataWindowRegistered = true;
+		ImGuiManager::Instance().AddCallbackWindow("Save Data", []() {
+			ImGui::Text("File: %s", SaveData::GetFilePath());
+			ImGui::Text("Tutorial cleared: %s", SaveData::IsTutorialCleared() ? "yes" : "no");
+			ImGui::Separator();
+			if (ImGui::Button("Clear tutorial flag (start from tutorial)")) {
+				SaveData::SetTutorialCleared(false);
+			}
+			if (ImGui::Button("Mark tutorial as cleared (skip tutorial)")) {
+				SaveData::SetTutorialCleared(true);
+			}
+		});
+	}
 #endif
 
 	//===================================
@@ -441,6 +523,7 @@ void GameScene::Initialize() {
 			soundsLoaded = true;
 			auto* sm = SoundManager::GetInstance();
 			sm->LoadFile("GameBGM", "Resources/Sounds/Game/GameBGM.mp3");
+			sm->LoadFile("TitleBGM", "Resources/Sounds/Title/TitleBGM.mp3"); // アトラクト(旧 TitleScene)用 BGM
 			// 素手(パンチのバリエーション。UnarmedWeapon.cpp の kPunchSoundNames と対応させる)
 			sm->LoadFile("Punch_Big", "Resources/Sounds/SE/BareHands/Punch_Big.mp3");
 			sm->LoadFile("Punch_Heavy1", "Resources/Sounds/SE/BareHands/Punch_Heavy1.mp3");
@@ -469,7 +552,8 @@ void GameScene::Initialize() {
 			sm->LoadFile("FireGun_Fire", "Resources/Sounds/SE/Flamethrower/FireGun_Fire.mp3");
 			sm->LoadFile("FireHazard_Ignite", "Resources/Sounds/SE/Fire/FireHazard_Ignite.mp3");
 		}
-		SoundManager::GetInstance()->Play2DSound("GameBGM");
+		// アトラクト(タイトル)は旧 TitleScene::Initialize と同じ TitleBGM を鳴らす。
+		SoundManager::GetInstance()->Play2DSound(attractMode_ ? "TitleBGM" : "GameBGM");
 	}
 
 	// 状態異常アウトライン(炎=赤/氷=青の点滅)の ID パスを GameApp に配線する。
@@ -492,16 +576,21 @@ void GameScene::Finalize() {
 		s_activeForDebug_ = nullptr;
 	}
 	GameApp::SetStatusOutlineDrawer(nullptr); // 状態異常アウトラインの配線を解除
-	SoundManager::GetInstance()->Stop2DSound("GameBGM");
+	SoundManager::GetInstance()->Stop2DSound(attractMode_ ? "TitleBGM" : "GameBGM");
+	StopRumble(); // シーンを抜けるときにコントローラー振動を鳴らしっぱなしにしない
 	for (EffectHandle h : portalEffectHandles_) {
-		EffectManager::GetInstance()->Stop(h);
-	}
+	EffectManager::GetInstance()->Stop(h);
+}
 	portalEffectHandles_.clear();
 	// 依存関係はないが、生成順と逆順に破棄する(可読性のための慣習)。
 	pickups_.clear();
 	flyingObjects_.clear();
 	fireHazards_.clear();
+	titleLogo_.reset();
+	tutorial_.reset();
+	tutorialBrain_.reset();
 	playerModel_.reset();
+	playerBrain_.reset();
 	enemyBrain_.reset();
 	enemy_.reset();
 	player_.reset();
@@ -532,10 +621,15 @@ void GameScene::LoadStage(int index) {
 	const auto& enemySpawns = stage_->GetEnemySpawnsWorld();
 	enemySpawn_ = !enemySpawns.empty() ? enemySpawns.front() : Vector3{ 3.0f, 2.0f, 0.0f };
 
+	// 安全機能：ステージ切り替えでコントローラー振動を止める（切替直前の被弾/爆発の振動を持ち越さない）。
+	StopRumble();
+
 	// プレイヤー・敵を初期位置へ戻す（HP・速度・状態異常もクリアされる）。
 	if (player_) player_->ResetForNewRound(playerSpawn_);
+	if (player_) prevPlayerHP_ = player_->GetHP(); // 被弾振動の基準を新ステージの満タン HP に合わせる
 	if (enemy_)  enemy_->ResetForNewRound(enemySpawn_);
 	if (enemyBrain_) enemyBrain_->ResetForNewRound();
+	if (playerBrain_) playerBrain_->ResetForNewRound();
 
 	// ステージに散らばっていた弾・武器・炎・デバッグ表示は持ち越さない。
 	flyingObjects_.clear();
@@ -579,6 +673,13 @@ void GameScene::RefreshPortalEffects() {
 }
 
 void GameScene::StartRoundCountdown() {
+	// アトラクト(デモ)とチュートリアルはカウントダウン無しで即開始する
+	// (どちらもラウンド制ではないので「次のラウンドまで3秒」に意味が無い)。
+	if (attractMode_ || tutorialMode_) {
+		roundState_ = RoundState::Battle;
+		countdownRemaining_ = 0.0f;
+		return;
+	}
 	roundState_ = RoundState::Countdown;
 	countdownRemaining_ = kRoundCountdownSeconds;
 }
@@ -636,18 +737,30 @@ void GameScene::UpdateRoundEnd(float dt) {
 	// 毎フレーム呼び直してフェードが終わらなくなる、といった事故を防ぐ)。
 	roundEndActionTaken_ = true;
 
-	if (roundEndMatchOver_) {
+	if (roundEndMatchOver_ && !attractMode_) {
 		// このセットは決着。結果を relay に残して Result シーンへ(ステージ切替はしない)。
 		// LoadStage を通らない経路なので、ここでも明示的に StopAll() しないと最後の一撃の
 		// 撃破エフェクトが Result シーンまで残ったまま持ち越されてしまう。
 		EffectManager::GetInstance()->StopAll();
+		// 安全機能：ゲーム終了（Result へ遷移）でコントローラー振動を止める。
+		StopRumble();
+		// このセットは決着。次セットのステージ抽選が新しい一巡から始まるようバッグを空にする。
+		stageCatalog_.ResetBattleRotation();
 		MatchResultRelay::SetResult(matchRule_.GetWinner(), matchRule_.GetPlayerPoints(), matchRule_.GetEnemyPoints());
 		SceneManager::GetInstance()->ChangeScene("Result", TransitionType::Fade);
 	} else {
-		// まだ決着していない。次のラウンドはランダムなステージで始める
+		// アトラクト時はセットが決着しても Result へ行かず、得点を 0 に戻して次のセットを続ける
+		// (タイトル画面の裏で永久にデモが回り続ける)。決着していない場合は通常どおり次ラウンドへ。
+		if (roundEndMatchOver_) {
+			EffectManager::GetInstance()->StopAll();
+			matchRule_.Reset();
+			// アトラクトも次セットは新しい一巡から。
+			stageCatalog_.ResetBattleRotation();
+		}
+		// 次のラウンドのステージ。アトラクト時は Sample 固定、通常時はランダム抽選
 		// (実際の読み込みと地形の作り直しは次フレーム先頭の pendingStageLoad_ 解決で行う。
 		//  LoadStage が地形・スポーン位置・カウントダウンの再開始までまとめて面倒を見る)。
-		pendingStageLoad_ = stageCatalog_.PickRandomIndex();
+		pendingStageLoad_ = PickStartStageIndex();
 	}
 }
 
@@ -716,15 +829,25 @@ void GameScene::UpdateStageGimmicks(float dt) {
 		}
 	};
 
-	auto applyPortal = [&](Character& c, bool& inPortalFlag) {
+	auto applyPortal = [&](Character& c, bool& portalLocked) {
+		const Vector3 cc = c.GetColliderCenter();
+		const Vector3 ch = c.GetColliderHalfExtent();
+
+		// ワープに一切重なっていない → ロック解除（次のワープに入れる）。
+		if (!stage_->OverlapsAnyPortal(cc, ch)) {
+			portalLocked = false;
+			return;
+		}
+		// 出てきたワープにまだ体が重なっている間は再ワープさせない。
+		// ジャンプ／しゃがみ／左右移動で完全に離れて初めて上の分岐で解除される。
+		if (portalLocked) {
+			return;
+		}
 		Vector3 dest{};
-		if (stage_->TryPortal(c.GetColliderCenter(), c.GetColliderHalfExtent(), dest)) {
-			if (!inPortalFlag) {
-				c.SetPosition(dest);
-				inPortalFlag = true; // 出口ポータルから歩いて出るまで再ワープしない
-			}
-		} else {
-			inPortalFlag = false;
+		if (stage_->TryPortal(cc, ch, dest)) {
+			c.SetPosition(dest);
+			c.CancelMomentum(); // 慣性で出口ブロックから流れ落ちないように
+			portalLocked = true;
 		}
 	};
 
@@ -752,6 +875,7 @@ void GameScene::UpdateStageGimmicks(float dt) {
 	for (const StageGrid::BombExplosion& ex : stage_->ConsumeBombExplosions()) {
 		AddDebugFlash(ex.center, ex.radius, Vector4{ 1.0f, 0.4f, 0.05f, 1.0f }, 0.5f);
 		EffectManager::GetInstance()->Play("Block_Exprosion", ex.center);
+		TriggerExplosionRumble(ex.center);
 		Log("爆弾ブロックが起爆\n");
 		applyBlast(*player_, ex);
 		applyBlast(*enemy_, ex);
@@ -784,9 +908,31 @@ void GameScene::Update() {
 	SoundManager::GetInstance()->UpdateListener(camera_.get());
 	SoundManager::GetInstance()->Update();
 
+	if (titleLogo_) {
+		titleLogo_->Update();
+
+		// タイトルロゴの UV を横へ流し続ける(虹テクスチャがスクロールする)。
+		// PS 側が mul(float4(texcoord,0,1), uvTransform) するので、平行移動行にオフセットを入れる。
+		constexpr float kTitleLogoUvScrollSpeed = 0.15f; // 1秒あたりのテクスチャ周回数
+		titleLogoUvScroll_ += GetScaledDeltaTime(TimeGroup::UI) * kTitleLogoUvScrollSpeed;
+		titleLogoUvScroll_ -= std::floor(titleLogoUvScroll_); // 0..1 に丸めてループ
+		if (auto* mi = titleLogo_->GetModelInstance()) {
+			Matrix4x4 uv = MakeIdentity4x4();
+			uv.m[3][0] = titleLogoUvScroll_; // U 方向へ平行移動
+			for (const auto& sm : mi->GetSubmeshes()) {
+				if (sm.material) {
+					sm.material->uvTransform = uv;
+				}
+			}
+		}
+	}
+
 	// ゲームロジックは Player グループの時間で進める。
 	// ヒットストップやスローを入れるときにここが効く
 	const float dt = GetScaledDeltaTime(TimeGroup::Player);
+
+	// コントローラー振動の減衰。ヒットストップ中に振動が固まらないよう unscaled な実 delta で進める。
+	UpdateRumble(dxCore_ ? dxCore_->GetDeltaTime() : dt);
 
 	//===================================
 	// 入力 → プレイヤーの意図(左右移動・ジャンプ・しゃがみ・攻撃・照準・投げ捨て)への変換
@@ -885,32 +1031,53 @@ void GameScene::Update() {
 	UpdateDebugFlashes(dt);
 
 	//===================================
-	// タイトルへ戻る
+	// シーン遷移。
+	//   アトラクト(デモ)モード : SPACE/Enter/(A) で本編(Game)へ。
+	//   通常                    : ESC/(B) でタイトルへ戻る。
 	//===================================
-	bool back = false;
-	if (input_) {
-		if (auto* kb = input_->GetKeyboard()) {
-			back |= kb->TriggerKey(DIK_ESCAPE);
+	if (attractMode_) {
+		bool start = false;
+		if (input_) {
+			if (auto* kb = input_->GetKeyboard()) {
+				start |= kb->TriggerKey(DIK_SPACE) || kb->TriggerKey(DIK_RETURN);
+			}
+			if (auto* pad = input_->GetController()) {
+				start |= pad->IsButtonTriggered(XINPUT_GAMEPAD_A);
+			}
 		}
-		if (auto* pad = input_->GetController()) {
-			back |= pad->IsButtonTriggered(XINPUT_GAMEPAD_B);
+		if (start) {
+			// チュートリアル未完了なら、本編の前にチュートリアルへ寄り道させる
+			// (完了フラグは SaveData に永続化されるので、2回目以降は直接本編へ入る)。
+			const char* next = SaveData::IsTutorialCleared() ? "Game" : "Tutorial";
+			SceneManager::GetInstance()->ChangeScene(next, TransitionType::Fade);
 		}
-	}
-	if (back) {
-		SceneManager::GetInstance()->ChangeScene("Title", TransitionType::Fade);
+	} else {
+		bool back = false;
+		if (input_) {
+			if (auto* kb = input_->GetKeyboard()) {
+				back |= kb->TriggerKey(DIK_ESCAPE);
+			}
+			// チュートリアル中の (B) は「説明を次へ」なので、タイトル復帰には使わない。
+			if (auto* pad = input_->GetController(); pad && !tutorialMode_) {
+				back |= pad->IsButtonTriggered(XINPUT_GAMEPAD_B);
+			}
+		}
+		if (back) {
+			SceneManager::GetInstance()->ChangeScene("Title", TransitionType::Fade);
+		}
 	}
 }
 
-void GameScene::UpdateBattle(float dt, const CharacterInput& playerInput) {
-	// 敵の意図は EnemyBrain が決める(入力デバイスは一切読まない)。
-	// 敵が素手のとき拾いに行けるよう、取得可能で最寄りの武器 pickup を渡す。
+CharacterInput GameScene::DecideAiInput(EnemyBrain& brain, Character& self, Character& target,
+	const PlayerModel* model, float dt) {
+	// self が素手のとき拾いに行けるよう、取得可能で最寄りの武器 pickup を渡す。
 	// 「真上の別プラットフォームにあって歩いても跳んでも届かない」もの、
-	// および敵 AI が「届かない」と判断して避けているものは候補から除く。
+	// および AI が「届かない」と判断して避けているものは候補から除く。
 	Vector3 nearestPickupPos{};
 	bool hasNearestPickup = false;
 	{
-		const Vector3 ep = enemy_->GetPosition();
-		const EnemyBrain::PickupAvoid avoid = enemyBrain_->GetPickupAvoid();
+		const Vector3 ep = self.GetPosition();
+		const EnemyBrain::PickupAvoid avoid = brain.GetPickupAvoid();
 		float best = 1e18f;
 		for (const auto& pk : pickups_) {
 			if (pk->IsTaken()) continue;
@@ -924,26 +1091,26 @@ void GameScene::UpdateBattle(float dt, const CharacterInput& playerInput) {
 		}
 	}
 
-	// 敵に向かって飛んでくる弾（プレイヤーが撃ったもの）を探す。回避判断に使う。
+	// self に向かって飛んでくる弾（相手が撃ったもの）を探す。回避判断に使う。
 	Vector3 threatPos{};
 	Vector3 threatVel{};
 	float threatTtc = 0.0f;
 	bool threatActive = false;
 	{
-		const Vector3 ep = enemy_->GetPosition();
+		const Vector3 ep = self.GetPosition();
 		float bestTtc = 1e9f;
 		for (const auto& obj : flyingObjects_) {
-			if (obj->IsDead() || obj->GetOwner() == enemy_.get()) {
+			if (obj->IsDead() || obj->GetOwner() == &self) {
 				continue; // 自分の弾は脅威じゃない
 			}
 			const Vector3 pp = obj->GetPosition();
 			const Vector3 pv = obj->GetVelocity();
 			const float dx = ep.x - pp.x;
 			if (dx * pv.x <= 0.0f || std::fabs(pv.x) < 1.0f) {
-				continue; // 敵の方へ向かっていない
+				continue; // self の方へ向かっていない
 			}
 			const float ttc = dx / pv.x;
-			// 到達時点の弾の高さが敵の胴体あたりを通るか（ざっくり）。
+			// 到達時点の弾の高さが self の胴体あたりを通るか（ざっくり）。
 			const float yAtHit = pp.y + pv.y * ttc;
 			if (std::fabs(yAtHit - ep.y) > 1.6f) {
 				continue;
@@ -959,21 +1126,39 @@ void GameScene::UpdateBattle(float dt, const CharacterInput& playerInput) {
 	}
 
 	BrainContext brainCtx;
-	brainCtx.self = enemy_.get();
-	brainCtx.target = player_.get();
+	brainCtx.self = &self;
+	brainCtx.target = &target;
 	brainCtx.stage = stage_.get();
-	brainCtx.playerModel = playerModel_.get();
+	brainCtx.playerModel = model;
 	brainCtx.nearestPickup = hasNearestPickup ? &nearestPickupPos : nullptr;
 	brainCtx.incomingThreat = threatActive;
 	brainCtx.threatPos = threatPos;
 	brainCtx.threatVel = threatVel;
 	brainCtx.threatTtc = threatTtc;
 	brainCtx.dt = dt;
-	const CharacterInput enemyInput = enemyBrain_->Think(brainCtx);
+	return brain.Think(brainCtx);
+}
 
-	player_->Update(dt, playerInput.moveX, playerInput.jumpTriggered, playerInput.crouchHeld,
-		playerInput.aimDirX, playerInput.aimDirY, playerInput.attackTriggered,
-		playerInput.attackHeld, playerInput.throwTriggered);
+void GameScene::UpdateBattle(float dt, const CharacterInput& playerInput) {
+	// 敵の意図は EnemyBrain が決める(入力デバイスは一切読まない)。学習モデルは playerModel_。
+	// チュートリアル中だけは、攻撃してこない移動専用の TutorialEnemyBrain に差し替える。
+	CharacterInput enemyInput;
+	if (tutorialMode_ && tutorialBrain_) {
+		enemyInput = tutorialBrain_->Think(*enemy_, *player_, stage_.get(), dt);
+	} else {
+		enemyInput = DecideAiInput(*enemyBrain_, *enemy_, *player_, playerModel_.get(), dt);
+	}
+
+	// プレイヤー枠の意図。通常は引数の playerInput(デバイス入力由来)。
+	// アトラクト(デモ)モードでは playerBrain_ がもう1体の AI として動かす(学習モデルは無し)。
+	CharacterInput resolvedPlayerInput = playerInput;
+	if (attractMode_ && playerBrain_) {
+		resolvedPlayerInput = DecideAiInput(*playerBrain_, *player_, *enemy_, nullptr, dt);
+	}
+
+	player_->Update(dt, resolvedPlayerInput.moveX, resolvedPlayerInput.jumpTriggered, resolvedPlayerInput.crouchHeld,
+		resolvedPlayerInput.aimDirX, resolvedPlayerInput.aimDirY, resolvedPlayerInput.attackTriggered,
+		resolvedPlayerInput.attackHeld, resolvedPlayerInput.throwTriggered);
 	enemy_->Update(dt, enemyInput.moveX, enemyInput.jumpTriggered, enemyInput.crouchHeld,
 		enemyInput.aimDirX, enemyInput.aimDirY, enemyInput.attackTriggered,
 		enemyInput.attackHeld, enemyInput.throwTriggered);
@@ -1042,10 +1227,30 @@ void GameScene::UpdateBattle(float dt, const CharacterInput& playerInput) {
 	UpdateWeaponSpawner(dt);
 
 	//===================================
+	// 被弾でコントローラーを弱く振動させる。
+	// ダメージ源（殴り・銃弾・爆風・炎・トゲ）を問わず、プレイヤーの HP が前フレームより
+	// 減っていたら被弾とみなす。爆発の中振動が来ているフレームは弱い被弾振動に上書きされない
+	// （TriggerRumble 側で弱い要求は強さを据え置く）。
+	//===================================
+	if (!attractMode_ && player_) {
+		const float hp = player_->GetHP();
+		if (hp < prevPlayerHP_ - 0.01f) {
+			TriggerRumble(kHitMotorLeft, kHitMotorRight, kHitRumbleSeconds);
+		}
+		prevPlayerHP_ = hp;
+	}
+
+	//===================================
 	// 場外・HP0判定 → 得点(MatchRule)判定
 	// 決着していなければ次のラウンド用にランダムなステージ切替を予約し(CheckKnockoutAndReset 内)、
 	// 決着していれば Result シーンへ遷移する。
+	//
+	// チュートリアルには得点もラウンドもステージ切替も無いので、この一式は丸ごと
+	// UpdateTutorial(説明送り・位置だけのリセット・完了判定)に差し替える。
 	//===================================
+	if (tutorialMode_) {
+		UpdateTutorial(dt);
+	} else {
 	// 各キャラの「やられ方」を、リセット前に記録しておく。
 	const bool enemyWasOutOfBounds = IsOutOfBounds(enemy_->GetPosition());
 	const bool playerWasOutOfBounds = IsOutOfBounds(player_->GetPosition());
@@ -1079,6 +1284,7 @@ void GameScene::UpdateBattle(float dt, const CharacterInput& playerInput) {
 				: PlayerModel::DefeatCause::Ranged);
 		playerModel_->OnPlayerDefeated(cause, playerDeathX, playerWasCrouching);
 	}
+	} // if (tutorialMode_) else
 
 	//===================================
 	// デバッグ表示の残り時間を進める(実際の描画は Draw() 側)
@@ -1092,20 +1298,160 @@ void GameScene::UpdateBattle(float dt, const CharacterInput& playerInput) {
 	UpdateGlobalEffects(camera_.get(), dxCore_ ? dxCore_->GetDeltaTime() : dt);
 
 	//===================================
-	// タイトルへ戻る
+	// タイトルへ戻る(アトラクトモードでは無効 ── タイトルそのものがこのデモなので)
 	//===================================
 	bool back = false;
-	if (input_) {
+	if (input_ && !attractMode_) {
 		if (auto* kb = input_->GetKeyboard()) {
 			back |= kb->TriggerKey(DIK_ESCAPE);
 		}
-		if (auto* pad = input_->GetController()) {
+		// チュートリアル中の (B) は「説明を次へ」なので、タイトル復帰には使わない
+		// (キーボードの ESC でだけ抜けられる)。
+		if (auto* pad = input_->GetController(); pad && !tutorialMode_) {
 			back |= pad->IsButtonTriggered(XINPUT_GAMEPAD_B);
 		}
 	}
 	if (back) {
 		SceneManager::GetInstance()->ChangeScene("Title", TransitionType::Fade);
 	}
+}
+
+void GameScene::UpdateTutorial(float dt) {
+	if (!tutorial_ || tutorialFinished_) {
+		return;
+	}
+
+	// 説明が武器の段に来た(または死亡リセットで素手に戻った)なら、拾える武器を1つ置く。
+	if (tutorial_->ConsumeWeaponSpawnRequest()) {
+		SpawnTutorialWeapon();
+	}
+
+	// やられた直後の猶予。死亡モーション/落下を少し見せてから位置だけ戻す。
+	if (tutorialRespawnTimer_ > 0.0f) {
+		tutorialRespawnTimer_ -= dt;
+		if (tutorialRespawnTimer_ <= 0.0f) {
+			ResetTutorialPositions();
+		}
+		return;
+	}
+
+	const bool playerDown = player_->IsDead() || IsOutOfBounds(player_->GetPosition());
+	const bool enemyDown = enemy_->IsDead() || IsOutOfBounds(enemy_->GetPosition());
+
+	// 全ての説明を終えた後に敵を倒した = チュートリアル完了。セーブして本編へ。
+	if (enemyDown && !playerDown && tutorial_->IsAwaitingFinalKill()) {
+		tutorialFinished_ = true;
+		SaveData::SetTutorialCleared(true);
+		Log("チュートリアル完了。本編へ進みます\n");
+		// LoadStage を通らない経路なので、ここでも明示的に止めないと撃破エフェクトや
+		// 振動が次のシーンへ持ち越される(UpdateRoundEnd の Result 遷移と同じ理由)。
+		EffectManager::GetInstance()->StopAll();
+		StopRumble();
+		SceneManager::GetInstance()->ChangeScene("Game", TransitionType::Fade);
+		return;
+	}
+
+	// それ以外のやられ方(ギミックでの自滅・説明の途中で敵を倒した等)は、得点も
+	// ステージ切替もせずに位置だけ戻してやり直す。
+	if (playerDown || enemyDown) {
+		tutorialRespawnTimer_ = kTutorialRespawnDelay;
+		return;
+	}
+
+	// 説明の送り。キーボードは SPACE、パッドは (B)
+	// ((A) はジャンプ、(X) は攻撃と重なるため、空いている (B) を使う)。
+	bool advance = false;
+	if (input_) {
+		if (auto* kb = input_->GetKeyboard()) {
+			advance |= kb->TriggerKey(DIK_SPACE);
+		}
+		if (auto* pad = input_->GetController()) {
+			advance |= pad->IsButtonTriggered(XINPUT_GAMEPAD_B);
+		}
+	}
+	tutorial_->Update(advance);
+}
+
+void GameScene::ResetTutorialPositions() {
+	// ステージは作り直さない ── 壊した床・起爆した爆弾などの破壊状況と、
+	// 説明の進行段階(tutorial_)をそのまま維持するのがチュートリアルの仕様。
+	// 戻すのは両キャラの位置・HP・状態異常と、その場に残っている飛翔物だけ。
+	if (player_) {
+		player_->ResetForNewRound(playerSpawn_);
+		prevPlayerHP_ = player_->GetHP();
+	}
+	if (enemy_) {
+		enemy_->ResetForNewRound(enemySpawn_);
+	}
+	if (tutorialBrain_) {
+		tutorialBrain_->Reset();
+	}
+	playerInPortal_ = false;
+	enemyInPortal_ = false;
+	StopRumble();
+
+	// 飛んでいる弾・地面の炎は持ち越さない(初期位置に残っていると即死ループになる)。
+	flyingObjects_.clear();
+	fireHazards_.clear();
+	debugFlashes_.clear();
+
+	// ResetForNewRound で素手に戻るので、武器の説明まで進んでいるのに拾える武器が
+	// 1つも無い状態になったら置き直す(説明を読み返せなくなるのを防ぐ)。
+	if (tutorial_ && tutorial_->HasReachedWeaponStep()) {
+		bool available = false;
+		for (const auto& pk : pickups_) {
+			if (!pk->IsTaken()) {
+				available = true;
+				break;
+			}
+		}
+		if (!available) {
+			tutorial_->RequestWeaponSpawn();
+		}
+	}
+}
+
+void GameScene::SpawnTutorialWeapon() {
+	if (!stage_) {
+		return;
+	}
+	// 「自分のマスは空いていて、その真下のマスは地形(足場)」= 立てる床の上。
+	// そのうちプレイヤー初期位置に一番近いセルへ置く(UpdateWeaponSpawner の候補選びと同じ条件で、
+	// 抽選の代わりに最短距離で決めているだけ)。
+	Vector3 best{};
+	float bestDistSq = 1e18f;
+	bool found = false;
+	for (int cy = 0; cy < StageGrid::kRows - 1; ++cy) {
+		for (int cx = 0; cx < StageGrid::kCols; ++cx) {
+			if (stage_->IsSolidCell(cx, cy) || !stage_->IsSolidCell(cx, cy + 1)) {
+				continue;
+			}
+			const Vector3 c = stage_->CellToWorldCenter(cx, cy);
+			const float dx = c.x - playerSpawn_.x;
+			const float dy = c.y - playerSpawn_.y;
+			const float distSq = dx * dx + dy * dy;
+			if (distSq < bestDistSq) {
+				bestDistSq = distSq;
+				best = c;
+				found = true;
+			}
+		}
+	}
+	if (!found) {
+		return;
+	}
+	auto pickup = std::make_unique<WeaponPickup>();
+	pickup->Initialize(camera_.get(), object3DManager_, dxCore_, best,
+		std::make_unique<Pistol>(), stage_.get());
+	pickups_.push_back(std::move(pickup));
+}
+
+bool GameScene::IsPadConnected() const {
+	if (!input_) {
+		return false;
+	}
+	auto* pad = input_->GetController();
+	return pad && pad->IsConnected();
 }
 
 void GameScene::ResolveAttack(Character& attacker, Character& defender, const char* attackerLabel) {
@@ -1200,9 +1546,14 @@ void GameScene::UpdateDebugFlashes(float dt) {
 }
 
 void GameScene::DrawDebugAids() {
+#ifdef _DEBUG
+	// 攻撃判定(爆発範囲・殴り範囲・弾ヒットなど)の可視化ワイヤーフレーム。
+	// あくまで開発中の当たり確認用なので Release/Development には出さない。
+	// 下の照準レイ/着弾点(マウスカーソル方向)は仕様上の常時表示なので残す。
 	for (const auto& flash : debugFlashes_) {
 		DebugDraw::Sphere(flash.position, flash.radius, flash.color, 12);
 	}
+#endif // _DEBUG
 
 	// プレイヤーの照準方向を常時表示する(シアンのレイ)。マウス/右スティックの向きが
 	// 意図通りワールドに反映されているかを目視確認するためのデバッグ表示。
@@ -1353,6 +1704,66 @@ void GameScene::UpdateFlyingObjects(float dt) {
 		flyingObjects_.end());
 }
 
+void GameScene::TriggerRumble(unsigned short left, unsigned short right, float seconds) {
+	if (attractMode_) {
+		return; // デモ中はプレイヤーが AI なので鳴らさない
+	}
+	// 再生中の振動より弱い要求では強さを据え置き、時間だけ必要に応じて延長する。
+	const bool weakerThanCurrent =
+		rumbleRemaining_ > 0.0f && left <= rumbleLeft_ && right <= rumbleRight_;
+	if (!weakerThanCurrent) {
+		rumbleLeft_ = left;
+		rumbleRight_ = right;
+	}
+	rumbleRemaining_ = (std::max)(rumbleRemaining_, seconds);
+	if (auto* pad = input_ ? input_->GetController() : nullptr) {
+		pad->SetVibration(rumbleLeft_, rumbleRight_);
+	}
+}
+
+void GameScene::TriggerExplosionRumble(const Vector3& center) {
+	if (attractMode_ || !player_) {
+		return;
+	}
+	// 爆発がプレイヤーの左右どちら側か（+ = 右）。真上・真下なら dx≈0。
+	const float dx = center.x - player_->GetPosition().x;
+	// |dx| が大きいほど「反対側」のモーターを弱める（0..1 に正規化）。
+	const float t = (std::min)(std::fabs(dx) / kRumblePanDistance, 1.0f);
+	const auto lerpMotor = [](unsigned short a, unsigned short b, float s) -> unsigned short {
+		return static_cast<unsigned short>(a + (b - a) * s);
+	};
+	const unsigned short faded = lerpMotor(kExplosionMotorMid, kExplosionMotorLow, t);
+	unsigned short left = kExplosionMotorMid;
+	unsigned short right = kExplosionMotorMid;
+	if (dx > 0.0f) {
+		right = kExplosionMotorMid; // 爆発は右側 → 右モーターは中のまま
+		left = faded;               // 左モーターは距離に応じて中→弱
+	} else if (dx < 0.0f) {
+		left = kExplosionMotorMid;
+		right = faded;
+	}
+	TriggerRumble(left, right, kExplosionRumbleSeconds);
+}
+
+void GameScene::UpdateRumble(float dt) {
+	if (rumbleRemaining_ <= 0.0f) {
+		return;
+	}
+	rumbleRemaining_ -= dt;
+	if (rumbleRemaining_ <= 0.0f) {
+		StopRumble();
+	}
+}
+
+void GameScene::StopRumble() {
+	rumbleRemaining_ = 0.0f;
+	rumbleLeft_ = 0;
+	rumbleRight_ = 0;
+	if (auto* pad = input_ ? input_->GetController() : nullptr) {
+		pad->StopVibration();
+	}
+}
+
 void GameScene::ResolveExplosion(const ArcingProjectile& obj) {
 	const Vector3 center = obj.GetPosition();
 	const float blastRadius = obj.GetBlastRadius();
@@ -1372,6 +1783,7 @@ void GameScene::ResolveExplosion(const ArcingProjectile& obj) {
 	// 汎用の爆発音(Explosion_Default)を鳴らす(Blaster.cpp/GrenadeLauncher.cpp 参照)。
 	const std::string& explosionSound = obj.GetExplosionSoundName();
 	SoundManager::GetInstance()->Play3DSound(explosionSound.empty() ? "Explosion_Default" : explosionSound, center);
+	TriggerExplosionRumble(center);
 
 	// 地形は「着弾点だけ」ではなく爆風半径ぶんまとめて削る(通常弾の着弾チップ削りより
 	// 広い範囲。直撃/地形当たり/寿命切れのどれで死んだかは問わない)。
@@ -1472,6 +1884,11 @@ void GameScene::TryPickUpWeapon(Character& character) {
 }
 
 void GameScene::UpdateWeaponSpawner(float dt) {
+	if (tutorialMode_) {
+		// チュートリアルでは武器は勝手に湧かない。説明が武器の段に来たときに
+		// SpawnTutorialWeapon() が1丁だけ置く(説明中に足元へ武器が降ってこないように)。
+		return;
+	}
 	weaponSpawnTimer_ -= dt;
 	if (weaponSpawnTimer_ > 0.0f) {
 		return;
@@ -1537,6 +1954,7 @@ void GameScene::Draw() {
 	if (object3DManager_ && dxCore_) {
 		object3DManager_->DrawSetting();
 		LightManager::GetInstance()->BindLights(dxCore_->GetCommandList());
+		if (titleLogo_) titleLogo_->Draw(dxCore_); // アトラクト時のタイトルロゴ(Title.mesh)
 		if (stage_) stage_->DrawModels(dxCore_); // ステージギミックのトゲ(Spike.mesh)
 		for (auto& pickup : pickups_) {
 			pickup->DrawModel(dxCore_);
@@ -1576,13 +1994,14 @@ void GameScene::Draw() {
 	if (tr && tr->IsInitialized()) {
 		// ラウンド開始前の3秒カウントダウン、決着直後の「どちらが勝ったか」を
 		// 画面中央に大きく出す(TitleScene::Draw と同じセンタリング)。
-		if (roundState_ == RoundState::Countdown) {
+		// アトラクト(デモ)モードでは START ガイド以外の文字は一切出さない。
+		if (!attractMode_ && roundState_ == RoundState::Countdown) {
 			char cd[8];
 			snprintf(cd, sizeof(cd), "%d", static_cast<int>(std::ceil(countdownRemaining_)));
 			const float w = static_cast<float>(WindowsApplication::kClientWidth);
 			const float cw = tr->MeasureWidth(cd, 3.0f);
 			tr->DrawText(cd, { (w - cw) * 0.5f, 260.0f }, 3.0f);
-		} else if (roundState_ == RoundState::RoundEnd) {
+		} else if (!attractMode_ && roundState_ == RoundState::RoundEnd) {
 			const char* winnerText = (roundEndWinnerSide_ == MatchRule::Winner::Player)
 				? "Player Wins the Round!"
 				: "Enemy Wins the Round!";
@@ -1591,9 +2010,27 @@ void GameScene::Draw() {
 			tr->DrawText(winnerText, { (w - ww) * 0.5f, 260.0f }, 2.0f);
 		}
 
+		// アトラクト(デモ)モード = タイトル画面。本編への入り方を画面下中央に大きく出す。
+		// 背景に埋もれないよう黒アウトライン付き。
+		if (attractMode_) {
+			const float w = static_cast<float>(WindowsApplication::kClientWidth);
+			const char* guide = "PRESS SPACE or (A)";
+			constexpr float kGuideScale = 2.2f;
+			const float gw = tr->MeasureWidth(guide, kGuideScale);
+			tr->DrawText(guide, { (w - gw) * 0.5f, 760.0f }, kGuideScale,
+				{ 1.0f, 1.0f, 1.0f, 1.0f },   // 白
+				3.0f,                          // アウトライン太さ
+				{ 0.0f, 0.0f, 0.0f, 1.0f });   // 黒アウトライン
+		}
+
+		// チュートリアルの説明パネル(画面下)。
+		DrawTutorialGuide();
+
 #ifdef _DEBUG
 		// ここから下は動作確認用のデバッグ表示(操作説明・HP・得点・AI内部状態)。
 		// 本物のUI(フェーズ5)が入るまでの仮表示なので、Release/Development には出さない。
+		// アトラクト(デモ)モードでは START ガイド以外は出さないので、これも丸ごと省く。
+		if (!attractMode_) {
 		tr->DrawText("A/D : Move   W/A(pad) : Jump   S/Down(pad) : Crouch", { 32.0f, 32.0f }, 0.8f);
 		tr->DrawText("Mouse/RStick : Aim   LClick/RT(pad) : Attack   R/RClick/Y(pad) : Throw", { 32.0f, 64.0f }, 0.8f);
 		tr->DrawText("ESC / (B) : Title", { 32.0f, 96.0f }, 0.8f);
@@ -1648,8 +2085,55 @@ void GameScene::Draw() {
 			snprintf(weaponLine, sizeof(weaponLine), "Weapon: %s (Ammo: %d)", player_->GetEquippedWeaponName().c_str(), ammo);
 		}
 		tr->DrawText(weaponLine, { 32.0f, 192.0f }, 0.8f);
+		} // if (!attractMode_)
 #endif
 
 		tr->Flush(); // スプライトと同じタイミング(描画順の最後)で確定させる
 	}
+}
+
+void GameScene::DrawTutorialGuide() {
+	if (!tutorialMode_ || !tutorial_) {
+		return;
+	}
+	auto* tr = TextRenderer::GetInstance();
+	if (!tr || !tr->IsInitialized()) {
+		return;
+	}
+
+	// コントローラーが繋がっていればパッドのキー表記、無ければキーボード＆マウスの表記を出す。
+	const bool pad = IsPadConnected();
+	const TutorialStep& step = tutorial_->CurrentStep();
+	const char* body = pad ? step.bodyPad : step.bodyKeyboard;
+	const char* hint = step.waitForKill
+		? "敵を倒すとチュートリアル終了"
+		: (pad ? "(B) ボタンで次へ" : "SPACE キーで次へ");
+
+	const float screenW = static_cast<float>(WindowsApplication::kClientWidth);
+	// 画面幅からこれだけ内側に収める(左右の余白)。
+	constexpr float kMargin = 60.0f;
+	const float maxW = screenW - kMargin * 2.0f;
+
+	// 指定スケールで入りきらない行は、幅に収まるところまで自動で縮める
+	// (本文の長さがステップごとに違うので、決め打ちのスケールだと画面外へはみ出す)。
+	auto fitScale = [&](const char* text, float desiredScale) {
+		const float w = tr->MeasureWidth(text, desiredScale);
+		return (w > maxW && w > 0.0f) ? desiredScale * (maxW / w) : desiredScale;
+	};
+	// 中央寄せで1行描く(背景に埋もれないよう黒アウトライン付き。START ガイドと同じ扱い)。
+	auto drawCentered = [&](const char* text, float y, float scale, const Vector4& color) {
+		const float s = fitScale(text, scale);
+		const float w = tr->MeasureWidth(text, s);
+		tr->DrawText(text, { (screenW - w) * 0.5f, y }, s, color,
+			3.0f, { 0.0f, 0.0f, 0.0f, 1.0f });
+	};
+
+	// 見出しには「3 / 12」の進行度を添える(あと何回 SPACE を押すかの目安)。
+	char title[192];
+	snprintf(title, sizeof(title), "[%d/%d] %s",
+		tutorial_->StepIndex() + 1, tutorial_->StepCount(), step.title);
+
+	drawCentered(title, 690.0f, 1.3f, { 1.0f, 0.92f, 0.35f, 1.0f }); // 見出し = 黄
+	drawCentered(body, 750.0f, 0.95f, { 1.0f, 1.0f, 1.0f, 1.0f });   // 本文 = 白
+	drawCentered(hint, 810.0f, 0.9f, { 0.65f, 0.9f, 1.0f, 1.0f });   // 進行の案内 = 水色
 }
