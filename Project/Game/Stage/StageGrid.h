@@ -117,6 +117,10 @@ public:
 	/// <summary>中心 center・半サイズ half の AABB がトゲ（32）のセルと重なっているか（＝即死）。</summary>
 	bool OverlapsSpike(const Vector3& center, const Vector3& half) const override;
 
+	/// <summary>中心 center・半サイズ half の AABB がいずれかのポータルセルと少しでも重なっているか。
+	/// 「出てきたワープから完全に離れるまで再ワープさせない」ロック解除の判定に使う。</summary>
+	bool OverlapsAnyPortal(const Vector3& center, const Vector3& half) const;
+
 	/// <summary>中心 center・半サイズ half の AABB がいずれかのポータルセルと重なっていれば true を返し、
 	/// 出口ワールド座標を outDest に入れる。出口は「重なっていない」ポータルからランダムに 1 つ。
 	/// 重なっていないポータルが 1 つも無ければ（＝全ポータルに跨っている / 単独ポータル）false。

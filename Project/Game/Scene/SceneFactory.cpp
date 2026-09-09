@@ -13,6 +13,14 @@ std::unique_ptr<Scene> SceneFactory::CreateScene(const std::string& sceneName) {
 		scene->SetAttractMode(true);
 		return scene;
 	}
+	if (sceneName == "Tutorial") {
+		// チュートリアルも専用シーンは持たず、チュートリアルモードにした GameScene を使う
+		// (ステージ・ギミック・キャラ・武器の挙動を本編とまったく同じものにするため)。
+		// タイトルの SPACE から、SaveData の完了フラグが立っていないときだけここへ来る。
+		auto scene = std::make_unique<GameScene>();
+		scene->SetTutorialMode(true);
+		return scene;
+	}
 	if (sceneName == "Game") {
 		return std::make_unique<GameScene>();
 	}

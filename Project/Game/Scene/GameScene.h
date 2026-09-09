@@ -19,6 +19,8 @@
 #include "AI/PlayerModel.h"
 #include "Common/CharacterInput.h"
 #include "Match/MatchRule.h"
+#include "Tutorial/TutorialDirector.h"
+#include "Tutorial/TutorialEnemyBrain.h"
 
 /// <summary>
 /// ゲーム本編の雛形(フェーズ1: 触れる最小プロトタイプ)。
@@ -60,9 +62,59 @@ public:
 	/// </summary>
 	void SetAttractMode(bool on) { attractMode_ = on; }
 
+	/// <summary>
+	/// チュートリアルモードを有効にする。SceneFactory が "Tutorial" 用の GameScene に対して呼ぶ。
+	/// このモードでは:
+	///   - ステージは Stage_Tutorial 固定(カウントダウン無しで即開始)。
+	///   - 敵は tutorialBrain_(攻撃してこない移動専用 AI)が動かす。
+	///   - 武器の定期スポーンは止め、説明が武器の段に来たときだけ 1 丁置く。
+	///   - 得点(MatchRule)・ステージ切替・Result 遷移は一切行わない。どちらかがやられても
+	///     地形の破壊状況と説明の進行段階はそのままに、位置と HP だけ初期へ戻す。
+	///   - 全ての説明を終えた後に敵を倒すと、セーブして本編(Game)へ遷移する。
+	/// Initialize() より前に呼ぶこと。
+	/// </summary>
+	void SetTutorialMode(bool on) { tutorialMode_ = on; }
+
 private:
 	// アトラクト(デモ)モードか。SetAttractMode 参照。
 	bool attractMode_ = false;
+
+	//====================
+	// チュートリアル(SetTutorialMode 参照)
+	//====================
+
+	bool tutorialMode_ = false;
+	// 説明の進行(どの段を出しているか)だけを持つ。描画・完了判定は GameScene 側。
+	std::unique_ptr<TutorialDirector> tutorial_;
+	// 攻撃してこない移動専用の敵 AI。チュートリアル時のみ生成し、enemyBrain_ の代わりに使う。
+	std::unique_ptr<TutorialEnemyBrain> tutorialBrain_;
+	// どちらかがやられてから位置リセットするまでの猶予(死亡モーション/落下を少し見せる)。
+	float tutorialRespawnTimer_ = 0.0f;
+	static constexpr float kTutorialRespawnDelay = 0.8f;
+	// 完了して本編へ遷移済みか(遷移フレーム以降に多重で処理しないためのラッチ)。
+	bool tutorialFinished_ = false;
+
+	/// <summary>
+	/// チュートリアルの進行本体。UpdateBattle から、通常モードの得点判定の代わりに呼ぶ。
+	/// 武器の設置・SPACE(パッドは (B))での説明送り・やられたときの位置リセット・
+	/// 「全説明後に敵を倒したら完了」の判定をまとめて行う。
+	/// </summary>
+	void UpdateTutorial(float dt);
+
+	/// <summary>
+	/// プレイヤーと敵を初期位置・満タン HP へ戻す。ステージは作り直さない ──
+	/// 壊した床・起爆した爆弾などの破壊状況と、説明の進行段階をそのまま維持するため。
+	/// </summary>
+	void ResetTutorialPositions();
+
+	/// <summary>プレイヤー初期位置に一番近い足場の上に、拾える武器(Pistol)を 1 つ置く。</summary>
+	void SpawnTutorialWeapon();
+
+	/// <summary>画面下のチュートリアル説明パネルを描く(Draw から呼ぶ)。</summary>
+	void DrawTutorialGuide();
+
+	/// <summary>ゲームパッドが接続されているか(説明のキー表記をパッド用に切り替える判定)。</summary>
+	bool IsPadConnected() const;
 
 	/// <summary>起動時 / ラウンド跨ぎで読み込むステージ index を決める。
 	/// アトラクト時は名前に "Sample" を含む最初のステージ(無ければ 0)、

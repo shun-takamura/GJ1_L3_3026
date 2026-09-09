@@ -39,10 +39,12 @@ void StageCatalog::Scan() {
 		entries_.push_back({ "Sample_00", "Resources/Stages/Sample_00.csv" });
 	}
 
-	// 本編抽選プール（"Sample" を名前に含むものはタイトル/チュートリアル用として除外）。
+	// 本編抽選プール。名前に "Sample"（タイトルのデモ用）または "Tutorial"（チュートリアル専用）
+	// を含むものは、本編のラウンドでは絶対に出さないので除外する。
 	battlePool_.clear();
 	for (int i = 0; i < static_cast<int>(entries_.size()); ++i) {
-		if (entries_[i].name.find("Sample") == std::string::npos) {
+		const std::string& n = entries_[i].name;
+		if (n.find("Sample") == std::string::npos && n.find("Tutorial") == std::string::npos) {
 			battlePool_.push_back(i);
 		}
 	}
