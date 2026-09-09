@@ -1,5 +1,7 @@
 #include "Blaster.h"
 
+#include "Sound/SoundManager.h"
+
 #ifdef USE_IMGUI
 #include "imgui.h"
 #endif
@@ -18,10 +20,14 @@ bool Blaster::TryRangedAttack(float dt, bool triggered, bool held, const Vector3
 		cooldownTimer_ -= dt;
 	}
 	if (!triggered || cooldownTimer_ > 0.0f || ammo_ <= 0) {
+		if (triggered && cooldownTimer_ <= 0.0f && ammo_ <= 0) {
+			SoundManager::GetInstance()->Play3DSound("Empty", ownerPos);
+		}
 		return false;
 	}
 	cooldownTimer_ = kCooldown;
 	--ammo_;
+	SoundManager::GetInstance()->Play3DSound("Blaster_Fire", ownerPos);
 
 	ProjectileSpawnRequest spawn;
 	spawn.origin = {
@@ -37,6 +43,7 @@ bool Blaster::TryRangedAttack(float dt, bool triggered, bool held, const Vector3
 	spawn.damage = kDamage;             // 爆心での最大ダメージ(実際に入る量は距離減衰後)
 	spawn.knockbackPower = kKnockbackPower; // 爆心での最大ノックバック(同上)
 	spawn.blastRadius = kBlastRadius;   // これが 0 より大きいことで GameScene 側が爆発扱いする
+	spawn.explosionSoundName = "Blaster_Explosion"; // 汎用爆発音(Explosion_Default)ではなくBlaster専用の音を使う
 	outSpawns.push_back(spawn);
 	return true;
 }

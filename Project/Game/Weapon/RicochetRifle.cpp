@@ -1,5 +1,7 @@
 #include "RicochetRifle.h"
 
+#include "Sound/SoundManager.h"
+
 #ifdef USE_IMGUI
 #include "imgui.h"
 #endif
@@ -17,10 +19,14 @@ bool RicochetRifle::TryRangedAttack(float dt, bool triggered, bool held, const V
 		cooldownTimer_ -= dt;
 	}
 	if (!triggered || cooldownTimer_ > 0.0f || ammo_ <= 0) {
+		if (triggered && cooldownTimer_ <= 0.0f && ammo_ <= 0) {
+			SoundManager::GetInstance()->Play3DSound("Empty", ownerPos);
+		}
 		return false;
 	}
 	cooldownTimer_ = kCooldown;
 	--ammo_;
+	SoundManager::GetInstance()->Play3DSound("RicochetRifle_Fire", ownerPos);
 
 	ProjectileSpawnRequest spawn;
 	spawn.origin = {
@@ -39,6 +45,7 @@ bool RicochetRifle::TryRangedAttack(float dt, bool triggered, bool held, const V
 	spawn.wallRestitution = kWallRestitution;
 	spawn.floorRestitution = kFloorRestitution;
 	spawn.maxBounces = kMaxBounces; // 壁・床合わせて3回反射したら次の接触で着弾する
+	spawn.bounceSoundName = "RicochetRifle_Bounce";
 	outSpawns.push_back(spawn);
 	return true;
 }

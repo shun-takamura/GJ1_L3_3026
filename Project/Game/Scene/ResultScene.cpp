@@ -9,6 +9,7 @@
 #include "TextRenderer.h"
 #include "WindowsApplication.h"
 #include "Match/MatchResultRelay.h"
+#include "Sound/SoundManager.h"
 
 #include <cstdio>
 #include <dinput.h>
@@ -46,9 +47,23 @@ void ResultScene::Initialize() {
 		winnerText_ = "Draw";
 		break;
 	}
+
+	//===================================
+	// リザルトBGM。LoadFile はプロセス中に1回だけでよい(GameScene::Initialize と同じ
+	// static ローカル変数によるガード)。勝敗を問わず常に再生する。
+	//===================================
+	{
+		static bool resultBgmLoaded = false;
+		if (!resultBgmLoaded) {
+			resultBgmLoaded = true;
+			SoundManager::GetInstance()->LoadFile("ResultBGM", "Resources/Sounds/Win/ResultBGM.mp3");
+		}
+		SoundManager::GetInstance()->Play2DSound("ResultBGM");
+	}
 }
 
 void ResultScene::Finalize() {
+	SoundManager::GetInstance()->Stop2DSound("ResultBGM");
 	camera_.reset();
 }
 
@@ -57,6 +72,9 @@ void ResultScene::Update() {
 	if (!GetUseDebugCamera()) {
 		camera_->Update();
 	}
+
+	// 再生終了検知を毎フレーム進める(08_Audio.md)。
+	SoundManager::GetInstance()->Update();
 
 	//===================================
 	// 入力でタイトルへ戻る(TitleScene::Update と同じ入力)

@@ -1,5 +1,7 @@
 #include "HandCannon.h"
 
+#include "Sound/SoundManager.h"
+
 #ifdef USE_IMGUI
 #include "imgui.h"
 #endif
@@ -16,10 +18,14 @@ bool HandCannon::TryRangedAttack(float dt, bool triggered, bool held, const Vect
 		cooldownTimer_ -= dt;
 	}
 	if (!triggered || cooldownTimer_ > 0.0f || ammo_ <= 0) {
+		if (triggered && cooldownTimer_ <= 0.0f && ammo_ <= 0) {
+			SoundManager::GetInstance()->Play3DSound("Empty", ownerPos);
+		}
 		return false;
 	}
 	cooldownTimer_ = kCooldown;
 	--ammo_;
+	SoundManager::GetInstance()->Play3DSound("HandCannon_Fire", ownerPos);
 
 	ProjectileSpawnRequest spawn;
 	spawn.origin = {

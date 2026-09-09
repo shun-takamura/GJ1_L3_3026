@@ -26,12 +26,12 @@ private:
 	static inline int   kStartingAmmo = 2;    // 全銃中最少(緊急用途なので使い切り前提)
 	static inline float kCooldown = 0.6f;     // 弾数が少ないのでクールダウン自体はさほど重要ではない
 	static inline float kMuzzleSpeed = 16.0f;
-	static inline float kDamage = 35.0f;      // SniperRifle(60)には劣るが直撃武器の中では高威力
+	static inline float kDamage = 15.0f;      // SniperRifle(60)には劣るが直撃武器の中では高威力
 	// 全銃中最大のノックバック。フィニッシャーとして「削り切れなかった相手を場外へ送る」役割を
 	// 数値そのもので担わせている(ダメージだけでなく吹き飛ばし力そのものが売り)。
-	static inline float kKnockbackPower = 20.0f;
+	static inline float kKnockbackPower = 50.0f;
 	// 反動公式(移動距離 ≈ power/6.0)で約2.5ユニット。SniperRifle(18.0)に次ぐ大きさ。
-	static inline float kRecoilPower = 15.0f;
+	static inline float kRecoilPower = 50.0f;
 	static inline float kGravityScale = 1.0f;
 	static inline float kRadius = 0.2f;       // 弾数が少ない分、判定はやや甘めにして外れ感を減らす
 	static inline float kLifeTime = 2.0f;     // 近距離での使用を想定した短射程

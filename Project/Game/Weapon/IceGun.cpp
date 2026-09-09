@@ -1,5 +1,7 @@
 #include "IceGun.h"
 
+#include "Sound/SoundManager.h"
+
 #ifdef USE_IMGUI
 #include "imgui.h"
 #endif
@@ -19,10 +21,14 @@ bool IceGun::TryRangedAttack(float dt, bool triggered, bool held, const Vector3&
 		cooldownTimer_ -= dt;
 	}
 	if (!triggered || cooldownTimer_ > 0.0f || ammo_ <= 0) {
+		if (triggered && cooldownTimer_ <= 0.0f && ammo_ <= 0) {
+			SoundManager::GetInstance()->Play3DSound("Empty", ownerPos);
+		}
 		return false;
 	}
 	cooldownTimer_ = kCooldown;
 	--ammo_;
+	SoundManager::GetInstance()->Play3DSound("IceGun_Fire", ownerPos);
 
 	ProjectileSpawnRequest spawn;
 	spawn.origin = {

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include "Weapon.h"
 
 /// <summary>
@@ -17,6 +19,8 @@
 /// </summary>
 class GrenadeLauncher : public Weapon {
 public:
+	~GrenadeLauncher() override;
+
 	bool TryRangedAttack(float dt, bool triggered, bool held, const Vector3& ownerPos,
 		float aimDirX, float aimDirY, std::vector<ProjectileSpawnRequest>& outSpawns) override;
 
@@ -48,4 +52,10 @@ private:
 
 	int ammo_ = kStartingAmmo;
 	float cooldownTimer_ = 0.0f;
+
+	// 発射音(SE/GrenadeLauncher/GrenadeLauncher.mp3、約2.87秒)は kCooldown(1.5秒)より長い。
+	// ハンドルを覚えておき、次に撃った瞬間に前回ぶんをまだ鳴っていても明示的に止めてから
+	// 鳴らし直す(AssaultRifle.h と同じ理由 ── 何もしないと重なった発射音がいつまでも
+	// 鳴り続けているように聞こえる。FireGun.h も同様の対策をしている)。
+	uint32_t fireSoundHandle_ = 0;
 };

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include "Weapon.h"
 
 /// <summary>
@@ -8,6 +10,8 @@
 /// </summary>
 class AssaultRifle : public Weapon {
 public:
+	~AssaultRifle() override;
+
 	bool TryRangedAttack(float dt, bool triggered, bool held, const Vector3& ownerPos,
 		float aimDirX, float aimDirY, std::vector<ProjectileSpawnRequest>& outSpawns) override;
 
@@ -38,6 +42,20 @@ private:
 	static inline float kLifeTime = 2.5f;
 	static constexpr float kMuzzleForwardOffset = 1.0f;
 
+	// 発射音(SE/Assault/AssaultRifle_Fire.mp3)の実際の長さ(秒)。SoundManager には
+	// 再生完了を問い合わせる手段が無いため、held の間はこの秒数が経つたびに鳴らし直す
+	// ことで「クリップが終わったら次を鳴らす」ループを Weapon 側で自前に組んでいる
+	// (弾の発射クールダウン kCooldown とは無関係。発射レートが上がっても音の長さは変わらない)。
+	// 元ファイルは2.83秒あったが、実際に音が鳴っているのは最初の約1秒だけで残りは
+	// ほぼ無音の減衰テール(ffmpegのRMS解析で確認済み)だったため、2026-09-09に
+	// ファイル自体を1.0秒にトリム(末尾0.1秒フェードアウト)した。無音区間を律儀に
+	// 待ってから次を鳴らしていたのが「ループしていないように聞こえる」原因だった。
+	static constexpr float kFireSoundDuration = 0.7f;
+
 	int ammo_ = kStartingAmmo;
 	float cooldownTimer_ = 0.0f;
+
+	// ---- 発射音ループの状態 ----
+	uint32_t fireSoundHandle_ = 0;   // 0=再生していない(SoundManager::Play3DSound の仕様と対応)
+	float fireSoundTimer_ = 0.0f;    // 0以下になったらクリップを鳴らし直す
 };

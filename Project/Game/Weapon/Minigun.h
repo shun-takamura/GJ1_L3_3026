@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include "Weapon.h"
 
 /// <summary>
@@ -9,6 +11,8 @@
 /// </summary>
 class Minigun : public Weapon {
 public:
+	~Minigun() override;
+
 	bool TryRangedAttack(float dt, bool triggered, bool held, const Vector3& ownerPos,
 		float aimDirX, float aimDirY, std::vector<ProjectileSpawnRequest>& outSpawns) override;
 
@@ -37,6 +41,14 @@ private:
 	static inline float kLifeTime = 2.5f;
 	static constexpr float kMuzzleForwardOffset = 1.0f;
 
+	// 発射音(SE/Minigun/Minigun_Fire.mp3)の実際の長さ(秒)。AssaultRifle.h と同じ理由で、
+	// SoundManager に再生完了を問い合わせる手段が無いため自前のタイマーでループさせる。
+	static constexpr float kFireSoundDuration = 1.87f;
+
 	int ammo_ = kStartingAmmo;
 	float cooldownTimer_ = 0.0f;
+
+	// ---- 発射音ループの状態 ----
+	uint32_t fireSoundHandle_ = 0;   // 0=再生していない(SoundManager::Play3DSound の仕様と対応)
+	float fireSoundTimer_ = 0.0f;    // 0以下になったらクリップを鳴らし直す
 };

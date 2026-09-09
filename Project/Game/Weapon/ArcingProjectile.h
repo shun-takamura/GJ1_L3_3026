@@ -140,6 +140,27 @@ public:
 	/// <summary>積み荷の所有権を呼び出し側へ渡す(積み荷が無ければ nullptr)。一度取り出すと空になる。</summary>
 	std::unique_ptr<Weapon> TakeThrownWeaponPayload();
 
+	/// <summary>爆発時に鳴らす効果音の名前(空なら GameScene 側が汎用爆発音にフォールバックする)。</summary>
+	const std::string& GetExplosionSoundName() const { return explosionSoundName_; }
+
+	/// <summary>
+	/// 直前の Update() で壁/床に跳ね返っていれば true を返し、跳ねた位置を outPos に詰めて
+	/// フラグを消費する(ConsumePendingAttack と同じ「一度取り出すと消費される」パターン)。
+	/// bounceSoundName_ が空(＝この弾には跳ね返り音が設定されていない)場合も呼び出し側の
+	/// 判断に委ねるため true を返す ── 空かどうかは GetBounceSoundName() で別途確認する。
+	/// </summary>
+	bool ConsumeBounceEvent(Vector3& outPos) {
+		if (!bounceEventPending_) {
+			return false;
+		}
+		bounceEventPending_ = false;
+		outPos = position_;
+		return true;
+	}
+
+	/// <summary>跳ね返り時に鳴らす効果音の名前(空なら何も鳴らさない)。</summary>
+	const std::string& GetBounceSoundName() const { return bounceSoundName_; }
+
 private:
 	Camera* camera_ = nullptr;
 	const IStageQuery* stage_ = nullptr;
@@ -186,6 +207,11 @@ private:
 	float proximityRadius_ = 0.0f;
 	float damageFalloffRange_ = 0.0f;
 	float minDamageMultiplier_ = 1.0f;
+
+	// ---- 効果音(ProjectileSpawnRequest::explosionSoundName/bounceSoundName のコピー) ----
+	std::string explosionSoundName_;
+	std::string bounceSoundName_;
+	bool bounceEventPending_ = false; // 今フレーム跳ね返ったか(ConsumeBounceEvent待ち)
   
 	// 投げた武器そのもの。銃弾(Weapon::TryRangedAttack 由来)では常に nullptr。
 	// 投げ武器(Character::ConsumePendingThrow 由来)では、残弾があとで拾い直せるよう

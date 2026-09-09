@@ -55,6 +55,8 @@ void ArcingProjectile::Initialize(Camera* camera, const std::string& name, const
 	fireHazardRadius_ = spec.fireHazardRadius;
 	fireHazardDuration_ = spec.fireHazardDuration;
 	fireHazardDps_ = spec.fireHazardDps;
+	explosionSoundName_ = spec.explosionSoundName;
+	bounceSoundName_ = spec.bounceSoundName;
 
 	// 投げ武器でモデル指定があればモデルを、無ければ(＝銃弾)プリミティブを見た目にする。
 	if (object3DManager && dxCore && !modelDir.empty() && !modelFile.empty()) {
@@ -147,6 +149,7 @@ void ArcingProjectile::Update(float dt) {
 			}
 			velocityX_ = -velocityX_ * wallRestitution_;
 			++bounceCount_;
+			bounceEventPending_ = true;
 		}
 		if (mv.hitCeiling && velocityY_ > 0.0f) {
 			velocityY_ = 0.0f; // 天井バウンドは狙わないシンプルな割り切り(押し返すだけ)
@@ -155,6 +158,7 @@ void ArcingProjectile::Update(float dt) {
 			if (floorRestitution_ > 0.0f && !bounceExhausted) {
 				velocityY_ = -velocityY_ * floorRestitution_; // 床でも跳ね続ける(グレラン/リコシェットライフル)
 				++bounceCount_;
+				bounceEventPending_ = true;
 			} else {
 				velocityY_ = 0.0f;
 				// 着地確定=静止(投げ捨てた武器・反射回数を使い切った弾はここで死ぬ)。
