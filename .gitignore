@@ -37,6 +37,10 @@ ipch/
 # 初回起動時に自動生成される（配置は自由に変えてよい）。
 Project/imgui.ini
 
+# 実行時に作られるセーブデータ（チュートリアル完了フラグ）。各自の進行状況なので管理しない。
+# 配布 zip には package_release.py が初期状態のものを新規生成して同梱する。
+Project/SaveData.txt
+
 # 実行時に作られるログとクラッシュダンプ
 Project/Logs/
 *.dmp

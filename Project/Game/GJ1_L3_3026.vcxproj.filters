@@ -25,6 +25,12 @@
     <Filter Include="Match">
       <UniqueIdentifier>{f6a7b8c9-1d2e-4f3a-9b4c-5d6e7f8a9b1c}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Tutorial">
+      <UniqueIdentifier>{a1b2c3d4-2e3f-4a5b-8c6d-7e8f9a1b2c3d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Save">
+      <UniqueIdentifier>{b2c3d4e5-3f4a-4b6c-9d7e-8f9a1b2c3d4e}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
@@ -119,6 +125,15 @@
     <ClCompile Include="AI\PlayerModel.cpp">
       <Filter>AI</Filter>
     </ClCompile>
+    <ClCompile Include="Tutorial\TutorialDirector.cpp">
+      <Filter>Tutorial</Filter>
+    </ClCompile>
+    <ClCompile Include="Tutorial\TutorialEnemyBrain.cpp">
+      <Filter>Tutorial</Filter>
+    </ClCompile>
+    <ClCompile Include="Save\SaveData.cpp">
+      <Filter>Save</Filter>
+    </ClCompile>
     <ClCompile Include="Match\MatchRule.cpp">
       <Filter>Match</Filter>
     </ClCompile>
@@ -169,6 +184,15 @@
     </ClInclude>
     <ClInclude Include="AI\PlayerModel.h">
       <Filter>AI</Filter>
+    </ClInclude>
+    <ClInclude Include="Tutorial\TutorialDirector.h">
+      <Filter>Tutorial</Filter>
+    </ClInclude>
+    <ClInclude Include="Tutorial\TutorialEnemyBrain.h">
+      <Filter>Tutorial</Filter>
+    </ClInclude>
+    <ClInclude Include="Save\SaveData.h">
+      <Filter>Save</Filter>
     </ClInclude>
     <ClInclude Include="Match\MatchRule.h">
       <Filter>Match</Filter>

@@ -416,6 +416,20 @@ bool StageGrid::OverlapsSpike(const Vector3& center, const Vector3& half) const 
 	return false;
 }
 
+bool StageGrid::OverlapsAnyPortal(const Vector3& center, const Vector3& half) const {
+	int cxLo, cyLo, cxHi, cyHi;
+	WorldToCell({ center.x - half.x, center.y + half.y, 0.0f }, cxLo, cyLo);
+	WorldToCell({ center.x + half.x, center.y - half.y, 0.0f }, cxHi, cyHi);
+	for (int cy = cyLo; cy <= cyHi; ++cy) {
+		for (int cx = cxLo; cx <= cxHi; ++cx) {
+			if (GimmickTypeAtCell(cx, cy) == GimmickType::Portal) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 bool StageGrid::TryPortal(const Vector3& center, const Vector3& half, Vector3& outDest) {
 	int cxLo, cyLo, cxHi, cyHi;
 	WorldToCell({ center.x - half.x, center.y + half.y, 0.0f }, cxLo, cyLo);
@@ -440,7 +454,17 @@ bool StageGrid::TryPortal(const Vector3& center, const Vector3& half, Vector3& o
 		return false;
 	}
 	const int pick = RandomGenerator::Instance().NextInt(0, static_cast<int>(exits.size()) - 1);
-	outDest = CellToWorldCenter(exits[pick]->cx, exits[pick]->cy);
+	const int ecx = exits[pick]->cx;
+	const int ecy = exits[pick]->cy;
+	Vector3 dest = CellToWorldCenter(ecx, ecy);
+
+	// 出口ポータルの真下がブロックなら、その上面にキャラの足がぴったり乗る高さへ調整する
+	// （ポータルセル中心にそのまま置くと、端のブロック上で位置がズレて落ちることがある）。
+	if (IsSolidCell(ecx, ecy + 1)) {
+		const float blockTop = CellToWorldCenter(ecx, ecy + 1).y + kCellSize * 0.5f;
+		dest.y = blockTop + half.y + 0.02f; // half.y = キャラ中心〜足元。resting 位置
+	}
+	outDest = dest;
 	return true;
 }
 

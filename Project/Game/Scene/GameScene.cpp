@@ -35,6 +35,7 @@
 #include "Weapon/FireHazard.h"
 #include "GameApp.h"
 #include "Match/MatchResultRelay.h"
+#include "Save/SaveData.h"
 #include "Effect/EffectManager.h"
 #include "Log.h"
 
@@ -182,6 +183,16 @@ int GameScene::PickStartStageIndex() {
 		}
 		return 0; // 見つからなければ先頭
 	}
+	if (tutorialMode_) {
+		// チュートリアルは専用ステージ固定。名前に "Tutorial" を含む最初のものを使う。
+		for (int i = 0; i < stageCatalog_.Count(); ++i) {
+			if (stageCatalog_.NameAt(i).find("Tutorial") != std::string::npos) {
+				return i;
+			}
+		}
+		Log("GameScene: Stage_Tutorial が見つかりません -> 先頭のステージで代用します\n");
+		return 0;
+	}
 	// 本編は Sample を除いたシャッフルバッグ抽選。1 セット(どちらか 10 点先取)が終わるまで
 	// 同じステージを引かない。バッグの仕切り直しは ResetBattleRotation()（セット決着時に呼ぶ）。
 	return stageCatalog_.PickNextBattleIndex();
@@ -314,6 +325,17 @@ void GameScene::Initialize() {
 		}
 	}
 
+	// チュートリアル。説明の進行役と、攻撃してこない移動専用の敵 AI を用意する
+	// (enemyBrain_ は生成だけされて使われない。切り分けは UpdateBattle 側で行う)。
+	if (tutorialMode_) {
+		tutorial_ = std::make_unique<TutorialDirector>();
+		tutorial_->Reset();
+		tutorialBrain_ = std::make_unique<TutorialEnemyBrain>();
+		tutorialBrain_->Reset();
+		tutorialRespawnTimer_ = 0.0f;
+		tutorialFinished_ = false;
+	}
+
 	matchRule_.Reset();
 
 	//===================================
@@ -424,6 +446,24 @@ void GameScene::Initialize() {
 			}
 		});
 	}
+
+	// デバッグ: セーブデータ(チュートリアル完了フラグ)の確認とリセット。
+	// タイトルの SPACE が「チュートリアルへ」「本編へ」のどちらに飛ぶかをここで切り替えられる。
+	static bool saveDataWindowRegistered = false;
+	if (!saveDataWindowRegistered) {
+		saveDataWindowRegistered = true;
+		ImGuiManager::Instance().AddCallbackWindow("Save Data", []() {
+			ImGui::Text("File: %s", SaveData::GetFilePath());
+			ImGui::Text("Tutorial cleared: %s", SaveData::IsTutorialCleared() ? "yes" : "no");
+			ImGui::Separator();
+			if (ImGui::Button("Clear tutorial flag (start from tutorial)")) {
+				SaveData::SetTutorialCleared(false);
+			}
+			if (ImGui::Button("Mark tutorial as cleared (skip tutorial)")) {
+				SaveData::SetTutorialCleared(true);
+			}
+		});
+	}
 #endif
 
 	// 状態異常アウトライン(炎=赤/氷=青の点滅)の ID パスを GameApp に配線する。
@@ -456,6 +496,8 @@ void GameScene::Finalize() {
 	flyingObjects_.clear();
 	fireHazards_.clear();
 	titleLogo_.reset();
+	tutorial_.reset();
+	tutorialBrain_.reset();
 	playerModel_.reset();
 	playerBrain_.reset();
 	enemyBrain_.reset();
@@ -540,8 +582,9 @@ void GameScene::RefreshPortalEffects() {
 }
 
 void GameScene::StartRoundCountdown() {
-	// アトラクト(デモ)はカウントダウン無しで即開始する。
-	if (attractMode_) {
+	// アトラクト(デモ)とチュートリアルはカウントダウン無しで即開始する
+	// (どちらもラウンド制ではないので「次のラウンドまで3秒」に意味が無い)。
+	if (attractMode_ || tutorialMode_) {
 		roundState_ = RoundState::Battle;
 		countdownRemaining_ = 0.0f;
 		return;
@@ -695,15 +738,25 @@ void GameScene::UpdateStageGimmicks(float dt) {
 		}
 	};
 
-	auto applyPortal = [&](Character& c, bool& inPortalFlag) {
+	auto applyPortal = [&](Character& c, bool& portalLocked) {
+		const Vector3 cc = c.GetColliderCenter();
+		const Vector3 ch = c.GetColliderHalfExtent();
+
+		// ワープに一切重なっていない → ロック解除（次のワープに入れる）。
+		if (!stage_->OverlapsAnyPortal(cc, ch)) {
+			portalLocked = false;
+			return;
+		}
+		// 出てきたワープにまだ体が重なっている間は再ワープさせない。
+		// ジャンプ／しゃがみ／左右移動で完全に離れて初めて上の分岐で解除される。
+		if (portalLocked) {
+			return;
+		}
 		Vector3 dest{};
-		if (stage_->TryPortal(c.GetColliderCenter(), c.GetColliderHalfExtent(), dest)) {
-			if (!inPortalFlag) {
-				c.SetPosition(dest);
-				inPortalFlag = true; // 出口ポータルから歩いて出るまで再ワープしない
-			}
-		} else {
-			inPortalFlag = false;
+		if (stage_->TryPortal(cc, ch, dest)) {
+			c.SetPosition(dest);
+			c.CancelMomentum(); // 慣性で出口ブロックから流れ落ちないように
+			portalLocked = true;
 		}
 	};
 
@@ -896,7 +949,10 @@ void GameScene::Update() {
 			}
 		}
 		if (start) {
-			SceneManager::GetInstance()->ChangeScene("Game", TransitionType::Fade);
+			// チュートリアル未完了なら、本編の前にチュートリアルへ寄り道させる
+			// (完了フラグは SaveData に永続化されるので、2回目以降は直接本編へ入る)。
+			const char* next = SaveData::IsTutorialCleared() ? "Game" : "Tutorial";
+			SceneManager::GetInstance()->ChangeScene(next, TransitionType::Fade);
 		}
 	} else {
 		bool back = false;
@@ -904,7 +960,8 @@ void GameScene::Update() {
 			if (auto* kb = input_->GetKeyboard()) {
 				back |= kb->TriggerKey(DIK_ESCAPE);
 			}
-			if (auto* pad = input_->GetController()) {
+			// チュートリアル中の (B) は「説明を次へ」なので、タイトル復帰には使わない。
+			if (auto* pad = input_->GetController(); pad && !tutorialMode_) {
 				back |= pad->IsButtonTriggered(XINPUT_GAMEPAD_B);
 			}
 		}
@@ -987,7 +1044,13 @@ CharacterInput GameScene::DecideAiInput(EnemyBrain& brain, Character& self, Char
 
 void GameScene::UpdateBattle(float dt, const CharacterInput& playerInput) {
 	// 敵の意図は EnemyBrain が決める(入力デバイスは一切読まない)。学習モデルは playerModel_。
-	const CharacterInput enemyInput = DecideAiInput(*enemyBrain_, *enemy_, *player_, playerModel_.get(), dt);
+	// チュートリアル中だけは、攻撃してこない移動専用の TutorialEnemyBrain に差し替える。
+	CharacterInput enemyInput;
+	if (tutorialMode_ && tutorialBrain_) {
+		enemyInput = tutorialBrain_->Think(*enemy_, *player_, stage_.get(), dt);
+	} else {
+		enemyInput = DecideAiInput(*enemyBrain_, *enemy_, *player_, playerModel_.get(), dt);
+	}
 
 	// プレイヤー枠の意図。通常は引数の playerInput(デバイス入力由来)。
 	// アトラクト(デモ)モードでは playerBrain_ がもう1体の AI として動かす(学習モデルは無し)。
@@ -1084,7 +1147,13 @@ void GameScene::UpdateBattle(float dt, const CharacterInput& playerInput) {
 	// 場外・HP0判定 → 得点(MatchRule)判定
 	// 決着していなければ次のラウンド用にランダムなステージ切替を予約し(CheckKnockoutAndReset 内)、
 	// 決着していれば Result シーンへ遷移する。
+	//
+	// チュートリアルには得点もラウンドもステージ切替も無いので、この一式は丸ごと
+	// UpdateTutorial(説明送り・位置だけのリセット・完了判定)に差し替える。
 	//===================================
+	if (tutorialMode_) {
+		UpdateTutorial(dt);
+	} else {
 	// 各キャラの「やられ方」を、リセット前に記録しておく。
 	const bool enemyWasOutOfBounds = IsOutOfBounds(enemy_->GetPosition());
 	const bool playerWasOutOfBounds = IsOutOfBounds(player_->GetPosition());
@@ -1118,6 +1187,7 @@ void GameScene::UpdateBattle(float dt, const CharacterInput& playerInput) {
 				: PlayerModel::DefeatCause::Ranged);
 		playerModel_->OnPlayerDefeated(cause, playerDeathX, playerWasCrouching);
 	}
+	} // if (tutorialMode_) else
 
 	//===================================
 	// デバッグ表示の残り時間を進める(実際の描画は Draw() 側)
@@ -1138,13 +1208,153 @@ void GameScene::UpdateBattle(float dt, const CharacterInput& playerInput) {
 		if (auto* kb = input_->GetKeyboard()) {
 			back |= kb->TriggerKey(DIK_ESCAPE);
 		}
-		if (auto* pad = input_->GetController()) {
+		// チュートリアル中の (B) は「説明を次へ」なので、タイトル復帰には使わない
+		// (キーボードの ESC でだけ抜けられる)。
+		if (auto* pad = input_->GetController(); pad && !tutorialMode_) {
 			back |= pad->IsButtonTriggered(XINPUT_GAMEPAD_B);
 		}
 	}
 	if (back) {
 		SceneManager::GetInstance()->ChangeScene("Title", TransitionType::Fade);
 	}
+}
+
+void GameScene::UpdateTutorial(float dt) {
+	if (!tutorial_ || tutorialFinished_) {
+		return;
+	}
+
+	// 説明が武器の段に来た(または死亡リセットで素手に戻った)なら、拾える武器を1つ置く。
+	if (tutorial_->ConsumeWeaponSpawnRequest()) {
+		SpawnTutorialWeapon();
+	}
+
+	// やられた直後の猶予。死亡モーション/落下を少し見せてから位置だけ戻す。
+	if (tutorialRespawnTimer_ > 0.0f) {
+		tutorialRespawnTimer_ -= dt;
+		if (tutorialRespawnTimer_ <= 0.0f) {
+			ResetTutorialPositions();
+		}
+		return;
+	}
+
+	const bool playerDown = player_->IsDead() || IsOutOfBounds(player_->GetPosition());
+	const bool enemyDown = enemy_->IsDead() || IsOutOfBounds(enemy_->GetPosition());
+
+	// 全ての説明を終えた後に敵を倒した = チュートリアル完了。セーブして本編へ。
+	if (enemyDown && !playerDown && tutorial_->IsAwaitingFinalKill()) {
+		tutorialFinished_ = true;
+		SaveData::SetTutorialCleared(true);
+		Log("チュートリアル完了。本編へ進みます\n");
+		// LoadStage を通らない経路なので、ここでも明示的に止めないと撃破エフェクトや
+		// 振動が次のシーンへ持ち越される(UpdateRoundEnd の Result 遷移と同じ理由)。
+		EffectManager::GetInstance()->StopAll();
+		StopRumble();
+		SceneManager::GetInstance()->ChangeScene("Game", TransitionType::Fade);
+		return;
+	}
+
+	// それ以外のやられ方(ギミックでの自滅・説明の途中で敵を倒した等)は、得点も
+	// ステージ切替もせずに位置だけ戻してやり直す。
+	if (playerDown || enemyDown) {
+		tutorialRespawnTimer_ = kTutorialRespawnDelay;
+		return;
+	}
+
+	// 説明の送り。キーボードは SPACE、パッドは (B)
+	// ((A) はジャンプ、(X) は攻撃と重なるため、空いている (B) を使う)。
+	bool advance = false;
+	if (input_) {
+		if (auto* kb = input_->GetKeyboard()) {
+			advance |= kb->TriggerKey(DIK_SPACE);
+		}
+		if (auto* pad = input_->GetController()) {
+			advance |= pad->IsButtonTriggered(XINPUT_GAMEPAD_B);
+		}
+	}
+	tutorial_->Update(advance);
+}
+
+void GameScene::ResetTutorialPositions() {
+	// ステージは作り直さない ── 壊した床・起爆した爆弾などの破壊状況と、
+	// 説明の進行段階(tutorial_)をそのまま維持するのがチュートリアルの仕様。
+	// 戻すのは両キャラの位置・HP・状態異常と、その場に残っている飛翔物だけ。
+	if (player_) {
+		player_->ResetForNewRound(playerSpawn_);
+		prevPlayerHP_ = player_->GetHP();
+	}
+	if (enemy_) {
+		enemy_->ResetForNewRound(enemySpawn_);
+	}
+	if (tutorialBrain_) {
+		tutorialBrain_->Reset();
+	}
+	playerInPortal_ = false;
+	enemyInPortal_ = false;
+	StopRumble();
+
+	// 飛んでいる弾・地面の炎は持ち越さない(初期位置に残っていると即死ループになる)。
+	flyingObjects_.clear();
+	fireHazards_.clear();
+	debugFlashes_.clear();
+
+	// ResetForNewRound で素手に戻るので、武器の説明まで進んでいるのに拾える武器が
+	// 1つも無い状態になったら置き直す(説明を読み返せなくなるのを防ぐ)。
+	if (tutorial_ && tutorial_->HasReachedWeaponStep()) {
+		bool available = false;
+		for (const auto& pk : pickups_) {
+			if (!pk->IsTaken()) {
+				available = true;
+				break;
+			}
+		}
+		if (!available) {
+			tutorial_->RequestWeaponSpawn();
+		}
+	}
+}
+
+void GameScene::SpawnTutorialWeapon() {
+	if (!stage_) {
+		return;
+	}
+	// 「自分のマスは空いていて、その真下のマスは地形(足場)」= 立てる床の上。
+	// そのうちプレイヤー初期位置に一番近いセルへ置く(UpdateWeaponSpawner の候補選びと同じ条件で、
+	// 抽選の代わりに最短距離で決めているだけ)。
+	Vector3 best{};
+	float bestDistSq = 1e18f;
+	bool found = false;
+	for (int cy = 0; cy < StageGrid::kRows - 1; ++cy) {
+		for (int cx = 0; cx < StageGrid::kCols; ++cx) {
+			if (stage_->IsSolidCell(cx, cy) || !stage_->IsSolidCell(cx, cy + 1)) {
+				continue;
+			}
+			const Vector3 c = stage_->CellToWorldCenter(cx, cy);
+			const float dx = c.x - playerSpawn_.x;
+			const float dy = c.y - playerSpawn_.y;
+			const float distSq = dx * dx + dy * dy;
+			if (distSq < bestDistSq) {
+				bestDistSq = distSq;
+				best = c;
+				found = true;
+			}
+		}
+	}
+	if (!found) {
+		return;
+	}
+	auto pickup = std::make_unique<WeaponPickup>();
+	pickup->Initialize(camera_.get(), object3DManager_, dxCore_, best,
+		std::make_unique<Pistol>(), stage_.get());
+	pickups_.push_back(std::move(pickup));
+}
+
+bool GameScene::IsPadConnected() const {
+	if (!input_) {
+		return false;
+	}
+	auto* pad = input_->GetController();
+	return pad && pad->IsConnected();
 }
 
 void GameScene::ResolveAttack(Character& attacker, Character& defender, const char* attackerLabel) {
@@ -1560,6 +1770,11 @@ void GameScene::TryPickUpWeapon(Character& character) {
 }
 
 void GameScene::UpdateWeaponSpawner(float dt) {
+	if (tutorialMode_) {
+		// チュートリアルでは武器は勝手に湧かない。説明が武器の段に来たときに
+		// SpawnTutorialWeapon() が1丁だけ置く(説明中に足元へ武器が降ってこないように)。
+		return;
+	}
 	weaponSpawnTimer_ -= dt;
 	if (weaponSpawnTimer_ > 0.0f) {
 		return;
@@ -1690,6 +1905,9 @@ void GameScene::Draw() {
 				{ 0.0f, 0.0f, 0.0f, 1.0f });   // 黒アウトライン
 		}
 
+		// チュートリアルの説明パネル(画面下)。
+		DrawTutorialGuide();
+
 #ifdef _DEBUG
 		// ここから下は動作確認用のデバッグ表示(操作説明・HP・得点・AI内部状態)。
 		// 本物のUI(フェーズ5)が入るまでの仮表示なので、Release/Development には出さない。
@@ -1754,4 +1972,50 @@ void GameScene::Draw() {
 
 		tr->Flush(); // スプライトと同じタイミング(描画順の最後)で確定させる
 	}
+}
+
+void GameScene::DrawTutorialGuide() {
+	if (!tutorialMode_ || !tutorial_) {
+		return;
+	}
+	auto* tr = TextRenderer::GetInstance();
+	if (!tr || !tr->IsInitialized()) {
+		return;
+	}
+
+	// コントローラーが繋がっていればパッドのキー表記、無ければキーボード＆マウスの表記を出す。
+	const bool pad = IsPadConnected();
+	const TutorialStep& step = tutorial_->CurrentStep();
+	const char* body = pad ? step.bodyPad : step.bodyKeyboard;
+	const char* hint = step.waitForKill
+		? "敵を倒すとチュートリアル終了"
+		: (pad ? "(B) ボタンで次へ" : "SPACE キーで次へ");
+
+	const float screenW = static_cast<float>(WindowsApplication::kClientWidth);
+	// 画面幅からこれだけ内側に収める(左右の余白)。
+	constexpr float kMargin = 60.0f;
+	const float maxW = screenW - kMargin * 2.0f;
+
+	// 指定スケールで入りきらない行は、幅に収まるところまで自動で縮める
+	// (本文の長さがステップごとに違うので、決め打ちのスケールだと画面外へはみ出す)。
+	auto fitScale = [&](const char* text, float desiredScale) {
+		const float w = tr->MeasureWidth(text, desiredScale);
+		return (w > maxW && w > 0.0f) ? desiredScale * (maxW / w) : desiredScale;
+	};
+	// 中央寄せで1行描く(背景に埋もれないよう黒アウトライン付き。START ガイドと同じ扱い)。
+	auto drawCentered = [&](const char* text, float y, float scale, const Vector4& color) {
+		const float s = fitScale(text, scale);
+		const float w = tr->MeasureWidth(text, s);
+		tr->DrawText(text, { (screenW - w) * 0.5f, y }, s, color,
+			3.0f, { 0.0f, 0.0f, 0.0f, 1.0f });
+	};
+
+	// 見出しには「3 / 12」の進行度を添える(あと何回 SPACE を押すかの目安)。
+	char title[192];
+	snprintf(title, sizeof(title), "[%d/%d] %s",
+		tutorial_->StepIndex() + 1, tutorial_->StepCount(), step.title);
+
+	drawCentered(title, 690.0f, 1.3f, { 1.0f, 0.92f, 0.35f, 1.0f }); // 見出し = 黄
+	drawCentered(body, 750.0f, 0.95f, { 1.0f, 1.0f, 1.0f, 1.0f });   // 本文 = 白
+	drawCentered(hint, 810.0f, 0.9f, { 0.65f, 0.9f, 1.0f, 1.0f });   // 進行の案内 = 水色
 }

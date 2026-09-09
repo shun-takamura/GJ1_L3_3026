@@ -14,6 +14,7 @@ zip の中身はラッパーフォルダ無しのフラット構成:
     dstorage.dll / dstoragecore.dll
     Generated/Assets.pack          ← 全アセット集約
     Resources/CompiledShaders/     ← 事前コンパイル済み .cso（.hlsl は同梱しない）
+    SaveData.txt                   ← 初期状態のセーブデータ（開発機のものは使わない）
 
 Windows の「すべて展開」は zip ファイル名と同じ名前のフォルダを自動で作って
 そこに中身を展開する。zip をリネームすれば展開後フォルダ名もそれに追従する。
@@ -42,6 +43,21 @@ FS_INCLUDE_DIRS = [
     RESOURCES_DIR / "Json",     # シーン/プリファブ/チューニング/キーコンフィグ等
     RESOURCES_DIR / "Sounds",   # MediaFoundation が URL で直接読む .wav
 ]
+
+# 配布 zip に同梱する「初期状態のセーブデータ」。
+#
+# ゲームはカレントディレクトリ（＝ exe と同じフォルダ。zip はフラット構成なので一致する）の
+# SaveData.txt を読み書きする。開発機の Project/SaveData.txt はチュートリアル完了済みに
+# なっていることが多いので、それを拾ってはいけない ── ここで内容を決め打ちして書き出し、
+# 配布版が必ず「チュートリアル未完了」から始まるようにする。
+#
+# ファイルが無くてもゲーム側は初期状態として扱う（Game/Save/SaveData.cpp）。それでも同梱するのは、
+# 「初回起動時にセーブファイルが作られる」ことを配布物の時点で確定させておくため
+# （書き込み不可の場所へ展開された場合に、初回の書き込み失敗で初めて気づく事態を避ける）。
+#
+# ※ 項目を増やす／フォーマットを変えるときは Game/Save/SaveData.cpp の Save() と揃えること。
+DEFAULT_SAVE_NAME = "SaveData.txt"
+DEFAULT_SAVE_CONTENT = "tutorialCleared=0\n"
 
 # Release ディレクトリから取り込む拡張子
 INCLUDE_SUFFIXES = {".exe", ".dll", ".cso"}
@@ -139,6 +155,7 @@ def main() -> int:
         print(f"  timestamp: {timestamp}")
         print(f"  release:   {len(release_files)} 件")
         print(f"  fs:        {len(fs_files)} 件 (Resources/{{CompiledShaders,Json,Sounds}} 配下)")
+        print(f"  save:      {DEFAULT_SAVE_NAME} (初期状態を新規生成)")
         print(f"  pack:      {pack_file.name} ({pack_size_mb:.2f} MB)")
 
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
@@ -155,6 +172,11 @@ def main() -> int:
         zf.write(pack_file, arcname=pack_arcname)
         if not args.silent:
             print(f"  + {pack_arcname}")
+
+        # 初期状態のセーブデータ（開発機の SaveData.txt は読まず、内容を決め打ちで書き出す）
+        zf.writestr(DEFAULT_SAVE_NAME, DEFAULT_SAVE_CONTENT)
+        if not args.silent:
+            print(f"  + {DEFAULT_SAVE_NAME} (初期状態)")
 
         # FS_INCLUDE_DIRS 配下を "Resources/..." の形でそのまま入れる
         for f in fs_files:
